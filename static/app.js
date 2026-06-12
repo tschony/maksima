@@ -98,10 +98,11 @@ function renderCounts() {
     .join("");
   const aiStatus = $("#ai-status");
   if (aiStatus) {
+    const storage = state.storage?.provider === "supabase" ? "Supabase" : "yerel kayıt";
     aiStatus.textContent =
       state.ai?.provider === "gemini"
-        ? `Belge okuma: Gemini (${state.ai.model})`
-        : "Belge okuma: yerel OCR";
+        ? `Belge okuma: Gemini (${state.ai.model}) · Veri: ${storage}`
+        : `Belge okuma: yerel OCR · Veri: ${storage}`;
   }
 }
 

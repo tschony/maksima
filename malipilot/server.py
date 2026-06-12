@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import json
 import mimetypes
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,7 +11,27 @@ from .ai_extractor import extract_with_gemini, gemini_configured, gemini_model
 from .exporters import export_filename, write_workbook
 from .ocr import extract_receipt, extract_z_report, run_ocr_pages
 from .parsers import parse_bank_file
-from .storage import EXPORT_DIR, ROOT, UPLOAD_DIR, account_rules, connect, insert_document, row, rows
+from .persistence import (
+    EXPORT_DIR,
+    api_state_payload,
+    create_client_record,
+    create_feedback_record,
+    create_rule_record,
+    ensure_ready,
+    export_sheets,
+    get_account_rules,
+    get_clients,
+    get_client,
+    get_review_item_record,
+    insert_bank_transaction,
+    insert_document_record,
+    insert_extracted_item_record,
+    mark_document_done,
+    review_needed,
+    store_upload,
+    update_review_item_record,
+)
+from .storage import ROOT
 
 
 STATIC_DIR = ROOT / "static"
@@ -32,8 +51,7 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/state":
             self.json_response(api_state())
         elif parsed.path == "/api/clients":
-            with connect() as conn:
-                self.json_response(rows(conn, "select * from clients order by name"))
+            self.json_response(get_clients())
         elif parsed.path == "/api/review-item":
             self.json_response(get_review_item(parse_qs(parsed.query)))
         elif parsed.path == "/api/export":
@@ -90,20 +108,10 @@ class Handler(BaseHTTPRequestHandler):
     def handle_export(self, query: dict[str, list[str]]) -> None:
         client_id = int((query.get("client_id") or ["0"])[0])
         period = (query.get("period") or [""])[0]
-        with connect() as conn:
-            client = row(conn, "select * from clients where id = ?", (client_id,))
-            if not client:
-                self.error_json(HTTPStatus.NOT_FOUND, "Mükellef bulunamadı")
-                return
-            where = "client_id = ? and period = ?"
-            args = (client_id, period)
-            sheets = {
-                "Banka_Hareketleri": rows(conn, f"select * from bank_transactions where {where} order by date, id", args),
-                "Z_Raporlari": rows(conn, f"select * from z_reports where {where} order by report_date, id", args),
-                "Fisler": rows(conn, f"select * from receipts where {where} order by receipt_date, id", args),
-                "Kontrol_Gerekenler": review_needed(conn, client_id, period),
-                "Ogrenilen_Kurallar": rows(conn, "select * from account_code_rules where client_id is null or client_id = ? order by id", (client_id,)),
-            }
+        client, sheets = export_sheets(client_id, period)
+        if not client:
+            self.error_json(HTTPStatus.NOT_FOUND, "Mükellef bulunamadı")
+            return
         filename = export_filename(client["name"], period)
         path = EXPORT_DIR / filename
         write_workbook(path, sheets)
@@ -117,32 +125,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def api_state() -> dict:
-    with connect() as conn:
-        clients = rows(conn, "select * from clients order by name")
-        return {
-            "clients": clients,
-            "counts": {
-                "clients": scalar(conn, "select count(*) from clients"),
-                "documents": scalar(conn, "select count(*) from documents"),
-                "bank": scalar(conn, "select count(*) from bank_transactions"),
-                "z_reports": scalar(conn, "select count(*) from z_reports"),
-                "receipts": scalar(conn, "select count(*) from receipts"),
-                "review": len(review_needed(conn)),
-            },
-            "recent_documents": rows(conn, "select * from documents order by id desc limit 10"),
-            "bank_rows": rows(conn, "select * from bank_transactions order by id desc limit 50"),
-            "z_reports": rows(conn, "select * from z_reports order by id desc limit 30"),
-            "receipts": rows(conn, "select * from receipts order by id asc limit 100"),
-            "review_items": review_needed(conn),
-            "ai": {
-                "provider": "gemini" if gemini_configured() else "yerel",
-                "model": gemini_model() if gemini_configured() else "",
-            },
+    return api_state_payload(
+        {
+            "provider": "gemini" if gemini_configured() else "yerel",
+            "model": gemini_model() if gemini_configured() else "",
         }
-
-
-def scalar(conn, query: str, args: tuple = ()) -> int:
-    return int(conn.execute(query, args).fetchone()[0])
+    )
 
 
 REVIEW_TABLES = {
@@ -206,22 +194,7 @@ def get_review_item(query: dict[str, list[str]]) -> dict:
     if not item_id:
         raise ValueError("Kontrol kaydı gerekli")
     config = review_config(item_type)
-    table_name = config["table"]
-    with connect() as conn:
-        item = row(conn, f"select * from {table_name} where id = ?", (item_id,))
-        if not item:
-            raise ValueError("Kontrol kaydı bulunamadı")
-        document = row(conn, "select * from documents where id = ?", (item["document_id"],))
-        client = row(conn, "select * from clients where id = ?", (item["client_id"],))
-        feedback = rows(conn, "select * from feedback where item_type = ? and item_id = ? order by id desc limit 10", (item_type, item_id))
-    return {
-        "item_type": item_type,
-        "item": item,
-        "document": document,
-        "client": client,
-        "feedback": feedback,
-        "editable_fields": sorted(config["fields"] - {"needs_review"}),
-    }
+    return get_review_item_record(item_type, item_id, config)
 
 
 def update_review_item(payload: dict) -> dict:
@@ -243,24 +216,9 @@ def update_review_item(payload: dict) -> dict:
     if not updates and not rating:
         raise ValueError("Kontrol için değişiklik girilmedi")
 
-    with connect() as conn:
-        current = row(conn, f"select * from {config['table']} where id = ?", (item_id,))
-        if not current:
-            raise ValueError("Kontrol kaydı bulunamadı")
-        if updates:
-            set_clause = ", ".join(f"{key} = ?" for key in updates)
-            conn.execute(
-                f"update {config['table']} set {set_clause} where id = ?",
-                (*updates.values(), item_id),
-            )
-        if rating:
-            if rating not in {"dogru", "yanlis", "eksik", "gereksiz"}:
-                raise ValueError("Geçersiz geri bildirim")
-            conn.execute(
-                "insert into feedback (item_type, item_id, rating, note) values (?, ?, ?, ?)",
-                (item_type, item_id, rating, note),
-            )
-        conn.commit()
+    if rating and rating not in {"dogru", "yanlis", "eksik", "gereksiz"}:
+        raise ValueError("Geçersiz geri bildirim")
+    update_review_item_record(item_type, item_id, updates, rating, note, config)
     return get_review_item({"item_type": [item_type], "id": [str(item_id)]})
 
 
@@ -269,10 +227,7 @@ def create_client(payload: dict) -> dict:
     alias = (payload.get("alias") or "").strip()
     if not name:
         raise ValueError("Mükellef adı gerekli")
-    with connect() as conn:
-        cur = conn.execute("insert into clients (name, alias) values (?, ?)", (name, alias))
-        conn.commit()
-        return row(conn, "select * from clients where id = ?", (cur.lastrowid,))
+    return create_client_record(name, alias)
 
 
 def handle_upload(payload: dict) -> dict:
@@ -287,99 +242,48 @@ def handle_upload(payload: dict) -> dict:
     content = base64.b64decode(payload.get("content_base64") or "")
     if not content:
         raise ValueError("Dosya içeriği boş")
-    folder = UPLOAD_DIR / str(client_id) / period / module
-    folder.mkdir(parents=True, exist_ok=True)
-    path = unique_path(folder / filename)
-    path.write_bytes(content)
+    path, stored_path = store_upload(content, client_id, period, module, filename)
 
-    with connect() as conn:
-        if not row(conn, "select * from clients where id = ?", (client_id,)):
-            raise ValueError("Mükellef bulunamadı")
-        doc_id = insert_document(conn, client_id, period, module, filename, str(path), "processing")
-        warnings: list[str] = []
-        if module == "bank":
-            result = parse_bank_file(path, client_id, period, payload.get("bank_name") or "", account_rules(conn, client_id))
-            warnings = result.warnings
-            for item in result.rows:
-                conn.execute(
-                    """
-                    insert into bank_transactions
-                    (document_id, client_id, period, bank_name, account_no_or_iban, date, description, debit, credit, balance, currency,
-                     counterparty_guess, transaction_hash, duplicate_flag, suggested_account_code, confidence, needs_review, source_row)
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        doc_id,
-                        item["client_id"],
-                        item["period"],
-                        item["bank_name"],
-                        item["account_no_or_iban"],
-                        item["date"],
-                        item["description"],
-                        item["debit"],
-                        item["credit"],
-                        item["balance"],
-                        item["currency"],
-                        item["counterparty_guess"],
-                        item["transaction_hash"],
-                        int(item["duplicate_flag"]),
-                        item["suggested_account_code"],
-                        item["confidence"],
-                        int(item["needs_review"]),
-                        item["source_row"],
-                    ),
-                )
+    if not get_client(client_id):
+        raise ValueError("Mükellef bulunamadı")
+    doc_id = insert_document_record(client_id, period, module, filename, stored_path, "processing")
+    warnings: list[str] = []
+    if module == "bank":
+        result = parse_bank_file(path, client_id, period, payload.get("bank_name") or "", get_account_rules(client_id))
+        warnings = result.warnings
+        for item in result.rows:
+            insert_bank_transaction(doc_id, item)
+    else:
+        ai_items, ai_warnings = [], []
+        try:
+            ai_items, ai_warnings = extract_with_gemini(path, module, client_id, period, filename)
+            warnings.extend(ai_warnings)
+        except Exception as exc:
+            warnings.append(f"Gemini kullanılamadı, yerel OCR denendi: {exc}")
+
+        if ai_items:
+            for item in ai_items:
+                insert_extracted_item(doc_id, module, item)
         else:
-            ai_items, ai_warnings = [], []
-            try:
-                ai_items, ai_warnings = extract_with_gemini(path, module, client_id, period, filename)
-                warnings.extend(ai_warnings)
-            except Exception as exc:
-                warnings.append(f"Gemini kullanılamadı, yerel OCR denendi: {exc}")
-
-            if ai_items:
-                for item in ai_items:
-                    insert_extracted_item(conn, module, doc_id, item)
+            ocr_pages = run_ocr_pages(path)
+            if len(ocr_pages) > 1:
+                warnings.append(f"{len(ocr_pages)} sayfa ayrı kayıt olarak işlendi")
+            if module == "z":
+                for ocr_page in ocr_pages:
+                    source_name = page_source_name(filename, "Z Raporu", ocr_page["page_number"], len(ocr_pages))
+                    item = extract_z_report(ocr_page["raw_text"], client_id, period, source_name)
+                    insert_extracted_item(doc_id, module, item)
             else:
-                ocr_pages = run_ocr_pages(path)
-                if len(ocr_pages) > 1:
-                    warnings.append(f"{len(ocr_pages)} sayfa ayrı kayıt olarak işlendi")
-                if module == "z":
-                    for ocr_page in ocr_pages:
-                        source_name = page_source_name(filename, "Z Raporu", ocr_page["page_number"], len(ocr_pages))
-                        item = extract_z_report(ocr_page["raw_text"], client_id, period, source_name)
-                        insert_extracted_item(conn, module, doc_id, item)
-                else:
-                    for ocr_page in ocr_pages:
-                        source_name = page_source_name(filename, "Fiş", ocr_page["page_number"], len(ocr_pages))
-                        item = extract_receipt(ocr_page["raw_text"], client_id, period, source_name)
-                        insert_extracted_item(conn, module, doc_id, item)
-        conn.execute("update documents set status = ?, warnings = ? where id = ?", ("done", json.dumps(warnings, ensure_ascii=False), doc_id))
-        conn.commit()
+                for ocr_page in ocr_pages:
+                    source_name = page_source_name(filename, "Fiş", ocr_page["page_number"], len(ocr_pages))
+                    item = extract_receipt(ocr_page["raw_text"], client_id, period, source_name)
+                    insert_extracted_item(doc_id, module, item)
+    mark_document_done(doc_id, warnings)
     return {"ok": True, "document_id": doc_id, "warnings": warnings}
 
 
-def insert_extracted_item(conn, module: str, doc_id: int, item: dict) -> None:
-    if module == "z":
-        conn.execute(
-            """
-            insert into z_reports
-            (document_id, client_id, period, source_file, report_date, device_brand, device_serial, z_no, gross_total,
-             vat_lines, payment_breakdown, confidence, needs_review, raw_text)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (doc_id, item["client_id"], item["period"], item["source_file"], item["report_date"], item["device_brand"], item["device_serial"], item["z_no"], item["gross_total"], item["vat_lines"], item["payment_breakdown"], item["confidence"], int(item["needs_review"]), item["raw_text"]),
-        )
-        return
-    conn.execute(
-        """
-        insert into receipts
-        (document_id, client_id, period, source_file, receipt_date, merchant_name, vkn_tckn, document_no, gross_total,
-         vat_total, payment_method, bookkeeping_status, confidence, needs_review, raw_text)
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (doc_id, item["client_id"], item["period"], item["source_file"], item["receipt_date"], item["merchant_name"], item["vkn_tckn"], item["document_no"], item["gross_total"], item["vat_total"], item["payment_method"], item["bookkeeping_status"], item["confidence"], int(item["needs_review"]), item["raw_text"]),
-    )
+def insert_extracted_item(doc_id: int, module: str, item: dict) -> None:
+    insert_extracted_item_record(module, doc_id, item)
 
 
 def page_source_name(filename: str, label: str, page_number: int, page_count: int) -> str:
@@ -405,13 +309,7 @@ def create_rule(payload: dict) -> dict:
     account_code = (payload.get("account_code") or "").strip()
     if not pattern or not account_code:
         raise ValueError("Açıklama paterni ve hesap kodu gerekli")
-    with connect() as conn:
-        cur = conn.execute(
-            "insert into account_code_rules (client_id, pattern, account_code, source) values (?, ?, ?, 'manual')",
-            (client_id, pattern, account_code),
-        )
-        conn.commit()
-        return row(conn, "select * from account_code_rules where id = ?", (cur.lastrowid,))
+    return create_rule_record(client_id, pattern, account_code)
 
 
 def create_feedback(payload: dict) -> dict:
@@ -421,33 +319,11 @@ def create_feedback(payload: dict) -> dict:
     note = (payload.get("note") or "").strip()
     if item_type not in {"bank", "z", "receipt"} or not item_id or rating not in {"dogru", "yanlis", "eksik", "gereksiz"}:
         raise ValueError("Geçersiz geri bildirim")
-    with connect() as conn:
-        cur = conn.execute(
-            "insert into feedback (item_type, item_id, rating, note) values (?, ?, ?, ?)",
-            (item_type, item_id, rating, note),
-        )
-        conn.commit()
-        return row(conn, "select * from feedback where id = ?", (cur.lastrowid,))
-
-
-def review_needed(conn, client_id: int | None = None, period: str | None = None) -> list[dict]:
-    clauses = ["needs_review = 1"]
-    args: list = []
-    if client_id:
-        clauses.append("client_id = ?")
-        args.append(client_id)
-    if period:
-        clauses.append("period = ?")
-        args.append(period)
-    where = " and ".join(clauses)
-    bank = rows(conn, f"select 'bank' as item_type, id, client_id, period, description as title, confidence, suggested_account_code as detail from bank_transactions where {where} order by id asc", tuple(args))
-    z = rows(conn, f"select 'z' as item_type, id, client_id, period, source_file as title, confidence, gross_total as detail from z_reports where {where} order by id asc", tuple(args))
-    receipt = rows(conn, f"select 'receipt' as item_type, id, client_id, period, source_file as title, confidence, bookkeeping_status as detail from receipts where {where} order by id asc", tuple(args))
-    return bank + z + receipt
+    return create_feedback_record(item_type, item_id, rating, note)
 
 
 def main() -> None:
-    connect().close()
+    ensure_ready()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"MaliPilot running at http://{HOST}:{PORT}")
     server.serve_forever()

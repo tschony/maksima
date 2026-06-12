@@ -34,6 +34,18 @@ python3 -m malipilot.server
 
 Vercel'de aynı değerler Project Settings -> Environment Variables bölümüne eklenir. Ayrıntılı akış için `GEMINI_BELEG_PIPELINE.md` dosyasına bak.
 
+## Kalıcı Veri Saklama
+
+Vercel üzerinde verilerin sayfa yenilenince kaybolmaması için Supabase gerekir:
+
+```bash
+SUPABASE_URL=https://dein-projekt.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=dein_service_role_key
+SUPABASE_STORAGE_BUCKET=documents
+```
+
+Supabase şeması `supabase_schema.sql` dosyasındadır. Bu değişkenler yoksa uygulama yerel SQLite ile çalışır.
+
 ## Bu Pilot Ne Yapar?
 
 - Anonim mükellef oluşturma.
