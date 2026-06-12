@@ -502,6 +502,34 @@ class DeleteTests(unittest.TestCase):
         with storage.connect() as conn:
             self.assertEqual(conn.execute("select count(*) from z_devices where serial = 'SER123'").fetchone()[0], 1)
 
+    def test_vercel_review_route_updates_z_device_and_vat_lines(self):
+        from api.index import handle_post
+
+        doc_id = insert_document_record(1, "2026-06", "z", "z.jpg", str(Path(self.tmp.name) / "z.jpg"), "done")
+        insert_extracted_item_record("z", doc_id, z_item(doc_id=doc_id))
+        device_response = handle_post("/api/z-devices", {"client_id": 1, "name": "Kasa 2", "brand": "NF", "serial": "BCJ2"})
+        device_id = json.loads(device_response[2].decode("utf-8"))["id"]
+        with storage.connect() as conn:
+            item_id = conn.execute("select id from z_reports limit 1").fetchone()[0]
+
+        status, _, _ = handle_post(
+            "/api/review-item",
+            {
+                "item_type": "z",
+                "id": item_id,
+                "values": {"device_id": device_id, "vat_lines": json.dumps([{"rate": "20", "amount": "542.50"}])},
+                "resolve": False,
+                "rating": "eksik",
+                "note": "KDV düzeltildi",
+            },
+        )
+
+        self.assertEqual(status, HTTPStatus.OK)
+        with storage.connect() as conn:
+            updated = conn.execute("select device_id, vat_lines from z_reports where id = ?", (item_id,)).fetchone()
+        self.assertEqual(updated[0], device_id)
+        self.assertEqual(json.loads(updated[1])[0]["amount"], "542.50")
+
     def test_z_report_insert_creates_device_and_marks_duplicate(self):
         first_doc = insert_document_record(1, "2026-06", "z", "z-1.jpg", str(Path(self.tmp.name) / "z-1.jpg"), "done")
         second_doc = insert_document_record(1, "2026-06", "z", "z-2.jpg", str(Path(self.tmp.name) / "z-2.jpg"), "done")

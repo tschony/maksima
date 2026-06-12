@@ -202,6 +202,7 @@ REVIEW_TABLES = {
         "table": "z_reports",
         "fields": {
             "report_date",
+            "device_id",
             "device_brand",
             "device_serial",
             "z_no",

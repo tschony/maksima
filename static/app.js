@@ -37,6 +37,7 @@ const FIELD_LABELS = {
   z_no: "Z no",
   gross_total: "Toplam tutar",
   vat_lines: "KDV satırları",
+  z_vat_total: "KDV tutarı",
   payment_breakdown: "Ödeme dağılımı",
   cumulative_total: "Kümülatif toplam",
   cumulative_vat: "Kümülatif KDV",
@@ -83,7 +84,7 @@ const REVIEW_FIELDS = {
     "device_serial",
     "z_no",
     "gross_total",
-    "vat_lines",
+    "z_vat_total",
     "payment_breakdown",
     "cumulative_total",
     "cumulative_vat",
@@ -282,7 +283,7 @@ function renderReview() {
   const body = rows
     .map((row) => {
       const isActive = activeReviewItem?.item_type === row.item_type && Number(activeReviewItem.id) === Number(row.id);
-      const cells = columns.map((col) => `<td>${formatCell(col, row[col])}</td>`).join("");
+      const cells = columns.map((col) => `<td>${formatCell(col, row[col], row)}</td>`).join("");
       return `
         <tr class="${isActive ? "selected-row" : ""}">
           ${cells}
@@ -337,9 +338,9 @@ function renderReviewDetail(payload) {
       <span>${escapeHtml(item.period || "")}</span>
       <span>${escapeHtml(documentName)}</span>
     </div>
-    <form id="review-form" class="review-form" data-item-type="${escapeHtml(itemType)}" data-id="${escapeHtml(item.id)}">
+    <form id="review-form" class="review-form" data-item-type="${escapeHtml(itemType)}" data-id="${escapeHtml(item.id)}" data-vat-lines="${escapeHtml(item.vat_lines || "")}">
       <div class="review-field-grid">
-        ${fields.map((field) => renderReviewField(field, item[field])).join("")}
+        ${fields.map((field) => renderReviewField(field, reviewFieldValue(field, item))).join("")}
       </div>
       <label>
         Açıklama notu
@@ -407,9 +408,32 @@ function renderReviewField(field, value) {
   return `
     <label>
       ${escapeHtml(labelFor(field))}
-      <input data-field="${escapeHtml(field)}" value="${escapeHtml(safeValue)}" />
+      <input data-field="${escapeHtml(field)}" value="${escapeHtml(formatReviewInputValue(field, safeValue))}" />
     </label>
   `;
+}
+
+function reviewFieldValue(field, item) {
+  if (field === "z_vat_total") return rowVatTotal(item, "z");
+  return item[field];
+}
+
+function formatReviewInputValue(field, value) {
+  if (!moneyFields().has(field)) return value ?? "";
+  if (value === "" || value === null || value === undefined) return "";
+  const number = parseMoney(value);
+  if (!Number.isFinite(number)) return "";
+  return formatNumberTR(number);
+}
+
+function normalizeReviewValue(field, value) {
+  if (!moneyFields().has(field)) return value;
+  if (String(value ?? "").trim() === "") return "";
+  return decimalText(parseMoney(value));
+}
+
+function moneyFields() {
+  return new Set(["debit", "credit", "balance", "gross_total", "vat_total", "z_vat_total", "cumulative_total", "cumulative_vat"]);
 }
 
 async function submitReviewUpdate(event) {
@@ -418,8 +442,12 @@ async function submitReviewUpdate(event) {
   const submitter = event.submitter;
   const values = {};
   form.querySelectorAll("[data-field]").forEach((field) => {
-    values[field.dataset.field] = field.value;
+    values[field.dataset.field] = normalizeReviewValue(field.dataset.field, field.value);
   });
+  if (form.dataset.itemType === "z" && "z_vat_total" in values) {
+    values.vat_lines = updateVatLinesTotal(form.dataset.vatLines || "", values.z_vat_total);
+    delete values.z_vat_total;
+  }
   const payload = {
     item_type: form.dataset.itemType,
     id: form.dataset.id,
@@ -436,6 +464,29 @@ async function submitReviewUpdate(event) {
   } else {
     await openReview(payload.item_type, payload.id);
   }
+}
+
+function updateVatLinesTotal(existingValue, totalValue) {
+  const total = decimalText(parseMoney(totalValue));
+  let parsed = null;
+  try {
+    parsed = JSON.parse(existingValue || "[]");
+  } catch {
+    parsed = null;
+  }
+  if (!Array.isArray(parsed) || !parsed.length || typeof parsed[0] !== "object") {
+    return JSON.stringify([{ rate: "20", amount: total }]);
+  }
+  const lines = parsed.map((line, index) => {
+    if (!line || typeof line !== "object") return line;
+    return index === parsed.length - 1 ? { ...line, amount: total } : line;
+  });
+  return JSON.stringify(lines);
+}
+
+function decimalText(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? number.toFixed(2) : "0.00";
 }
 
 function renderDataTable() {
@@ -820,7 +871,7 @@ const TAB_LABELS = {
 
 const LIBRARY_COLUMNS = {
   bank: ["date", "bank_name", "description", "debit", "credit", "suggested_account_code", "confidence", "needs_review"],
-  z: ["report_date", "device_id", "source_file", "z_no", "gross_total", "vat_lines", "duplicate_flag", "validation_warnings", "confidence", "needs_review"],
+  z: ["report_date", "device_id", "source_file", "z_no", "gross_total", "z_vat_total", "duplicate_flag", "validation_warnings", "confidence", "needs_review"],
   receipt: ["receipt_date", "merchant_name", "vkn_tckn", "document_no", "gross_total", "vat_total", "bookkeeping_status", "confidence", "needs_review"],
   docs: ["period", "module", "original_name", "status", "warnings", "created_at"],
 };
@@ -830,7 +881,7 @@ function renderLibraryDetailTable(rows, tabName) {
   const columns = LIBRARY_COLUMNS[tabName] || [];
   const head = [...columns, "aksiyon"].map((col) => `<th>${escapeHtml(labelFor(col))}</th>`).join("");
   const body = rows
-    .map((row) => `<tr>${columns.map((col) => `<td>${formatCell(col, row[col])}</td>`).join("")}<td>${renderLibraryActions(row, tabName)}</td></tr>`)
+    .map((row) => `<tr>${columns.map((col) => `<td>${formatCell(col, row[col], row)}</td>`).join("")}<td>${renderLibraryActions(row, tabName)}</td></tr>`)
     .join("");
   return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
@@ -1013,6 +1064,10 @@ function parseMoney(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function formatNumberTR(value) {
+  return new Intl.NumberFormat("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value || 0);
+}
+
 function parseVatLines(value) {
   if (!value) return 0;
   try {
@@ -1037,10 +1092,10 @@ function sumVatNode(node) {
 }
 
 function formatMoney(value) {
-  return `${new Intl.NumberFormat("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value || 0)} ₺`;
+  return `${formatNumberTR(value)} ₺`;
 }
 
-function formatCell(col, value) {
+function formatCell(col, value, row = null) {
   if (col === "needs_review") {
     return value ? '<span class="badge review">kontrol</span>' : '<span class="badge ok">tamam</span>';
   }
@@ -1052,6 +1107,9 @@ function formatCell(col, value) {
     const cls = number < 0.65 ? "bad" : number < 0.8 ? "review" : "ok";
     return `<span class="badge ${cls}">${Math.round(number * 100)}%</span>`;
   }
+  if (col === "z_vat_total") return escapeHtml(formatMoney(row ? rowVatTotal(row, "z") : parseMoney(value)));
+  if (moneyFields().has(col)) return escapeHtml(formatMoney(parseMoney(value)));
+  if (col === "vat_lines") return escapeHtml(formatMoney(parseVatLines(value)));
   if (col === "device_id") return escapeHtml(deviceName(value));
   if (col === "item_type" || col === "module") return escapeHtml(TYPE_LABELS[value] || value || "");
   if (col === "source_file" || col === "title" || col === "original_name") return escapeHtml(visibleDocumentTitle(value));
