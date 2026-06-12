@@ -7,7 +7,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +79,25 @@ class SupabaseRest:
             detail = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"Supabase dosya yükleme başarısız oldu: {exc.code} {detail[:400]}") from exc
         return f"supabase://{SUPABASE_BUCKET}/{object_path}"
+
+    def create_signed_upload_url(self, object_path: str) -> str:
+        quoted_path = "/".join(urllib.parse.quote(part) for part in object_path.split("/"))
+        result = self.request_json(
+            "POST",
+            f"/storage/v1/object/upload/sign/{SUPABASE_BUCKET}/{quoted_path}",
+            payload={"upsert": False},
+        )
+        signed_path = result.get("url") or result.get("signedURL") or result.get("signedUrl")
+        if not signed_path:
+            raise RuntimeError("Supabase doğrudan yükleme adresi oluşturulamadı")
+        if str(signed_path).startswith("http"):
+            return str(signed_path)
+        return f"{self.url}/storage/v1{signed_path}"
+
+    def download_object(self, object_path: str) -> bytes:
+        quoted_path = "/".join(urllib.parse.quote(part) for part in object_path.split("/"))
+        response = self.request("GET", f"/storage/v1/object/{SUPABASE_BUCKET}/{quoted_path}")
+        return response.read()
 
     def request_json(
         self,
@@ -193,6 +211,29 @@ def store_upload(content: bytes, client_id: int, period: str, module: str, filen
     mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     stored_path = client().upload_object(object_path, content, mime_type)
     return local_path, stored_path
+
+
+def create_direct_upload(client_id: int, period: str, module: str, filename: str) -> dict[str, str]:
+    if not using_supabase():
+        raise RuntimeError("Doğrudan yükleme için Supabase bağlantısı gerekli")
+    safe_name = Path(filename or "upload.bin").name
+    object_path = f"{client_id}/{period}/{module}/{uuid.uuid4().hex}-{safe_name}"
+    return {
+        "object_path": object_path,
+        "stored_path": f"supabase://{SUPABASE_BUCKET}/{object_path}",
+        "upload_url": client().create_signed_upload_url(object_path),
+    }
+
+
+def materialize_stored_upload(object_path: str, client_id: int, period: str, module: str, filename: str) -> tuple[Path, str]:
+    if not using_supabase():
+        raise RuntimeError("Kaydedilmiş dosya işleme için Supabase bağlantısı gerekli")
+    content = client().download_object(object_path)
+    folder = UPLOAD_DIR / str(client_id) / period / module
+    folder.mkdir(parents=True, exist_ok=True)
+    local_path = unique_path(folder / Path(filename or "upload.bin").name)
+    local_path.write_bytes(content)
+    return local_path, f"supabase://{SUPABASE_BUCKET}/{object_path}"
 
 
 def insert_document_record(client_id: int, period: str, module: str, filename: str, stored_path: str, status: str) -> int:
@@ -546,4 +587,3 @@ def unique_path(path: Path) -> Path:
         if not candidate.exists():
             return candidate
     raise ValueError("Yükleme dosyası adı oluşturulamadı")
-

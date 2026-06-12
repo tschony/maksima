@@ -14,11 +14,13 @@ from malipilot.server import (
     create_feedback,
     create_rule,
     get_review_item,
+    handle_stored_upload,
     handle_upload,
-    review_needed,
+    handle_upload_url,
     update_review_item,
 )
-from malipilot.storage import EXPORT_DIR, connect, row, rows
+from malipilot.persistence import export_sheets, get_clients
+from malipilot.storage import EXPORT_DIR
 
 
 def app(environ, start_response):
@@ -49,8 +51,7 @@ def handle_get(path: str, query: dict[str, list[str]]):
     if path == "/api/state":
         return json_payload(api_state())
     if path == "/api/clients":
-        with connect() as conn:
-            return json_payload(rows(conn, "select * from clients order by name"))
+        return json_payload(get_clients())
     if path == "/api/review-item":
         return json_payload(get_review_item(query))
     if path == "/api/export":
@@ -63,6 +64,10 @@ def handle_post(path: str, payload: dict):
         return json_payload(create_client(payload))
     if path == "/api/upload":
         return json_payload(handle_upload(payload))
+    if path == "/api/upload-url":
+        return json_payload(handle_upload_url(payload))
+    if path == "/api/process-stored-upload":
+        return json_payload(handle_stored_upload(payload))
     if path == "/api/rules":
         return json_payload(create_rule(payload))
     if path == "/api/feedback":
@@ -100,19 +105,9 @@ def file_payload(path: Path):
 def export_payload(query: dict[str, list[str]]):
     client_id = int((query.get("client_id") or ["0"])[0])
     period = (query.get("period") or [""])[0]
-    with connect() as conn:
-        client = row(conn, "select * from clients where id = ?", (client_id,))
-        if not client:
-            return json_payload({"error": "Mükellef bulunamadı"}, HTTPStatus.NOT_FOUND)
-        where = "client_id = ? and period = ?"
-        args = (client_id, period)
-        sheets = {
-            "Banka_Hareketleri": rows(conn, f"select * from bank_transactions where {where} order by date, id", args),
-            "Z_Raporlari": rows(conn, f"select * from z_reports where {where} order by report_date, id", args),
-            "Fisler": rows(conn, f"select * from receipts where {where} order by receipt_date, id", args),
-            "Kontrol_Gerekenler": review_needed(conn, client_id, period),
-            "Ogrenilen_Kurallar": rows(conn, "select * from account_code_rules where client_id is null or client_id = ? order by id", (client_id,)),
-        }
+    client, sheets = export_sheets(client_id, period)
+    if not client:
+        return json_payload({"error": "Mükellef bulunamadı"}, HTTPStatus.NOT_FOUND)
     filename = export_filename(client["name"], period)
     path = EXPORT_DIR / filename
     write_workbook(path, sheets)
@@ -130,4 +125,3 @@ def export_payload(query: dict[str, list[str]]):
 
 def status_line(status: HTTPStatus) -> str:
     return f"{status.value} {status.phrase}"
-

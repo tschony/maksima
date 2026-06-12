@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,6 +16,7 @@ from .persistence import (
     EXPORT_DIR,
     api_state_payload,
     create_client_record,
+    create_direct_upload,
     create_feedback_record,
     create_rule_record,
     ensure_ready,
@@ -27,6 +29,7 @@ from .persistence import (
     insert_document_record,
     insert_extracted_item_record,
     mark_document_done,
+    materialize_stored_upload,
     review_needed,
     store_upload,
     update_review_item_record,
@@ -67,6 +70,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response(create_client(payload))
             elif parsed.path == "/api/upload":
                 self.json_response(handle_upload(payload))
+            elif parsed.path == "/api/upload-url":
+                self.json_response(handle_upload_url(payload))
+            elif parsed.path == "/api/process-stored-upload":
+                self.json_response(handle_stored_upload(payload))
             elif parsed.path == "/api/rules":
                 self.json_response(create_rule(payload))
             elif parsed.path == "/api/feedback":
@@ -243,13 +250,44 @@ def handle_upload(payload: dict) -> dict:
     if not content:
         raise ValueError("Dosya içeriği boş")
     path, stored_path = store_upload(content, client_id, period, module, filename)
+    return process_uploaded_file(path, stored_path, client_id, period, module, filename, payload.get("bank_name") or "")
 
+
+def handle_upload_url(payload: dict) -> dict:
+    module = payload.get("module")
+    if module not in {"bank", "z", "receipt"}:
+        raise ValueError("Bilinmeyen bölüm")
+    client_id = int(payload.get("client_id") or 0)
+    period = (payload.get("period") or "").strip()
+    filename = Path(payload.get("filename") or "upload.bin").name
+    if not client_id or not period:
+        raise ValueError("Mükellef ve dönem gerekli")
     if not get_client(client_id):
         raise ValueError("Mükellef bulunamadı")
+    return create_direct_upload(client_id, period, module, filename)
+
+
+def handle_stored_upload(payload: dict) -> dict:
+    module = payload.get("module")
+    if module not in {"bank", "z", "receipt"}:
+        raise ValueError("Bilinmeyen bölüm")
+    client_id = int(payload.get("client_id") or 0)
+    period = (payload.get("period") or "").strip()
+    filename = Path(payload.get("filename") or "upload.bin").name
+    object_path = (payload.get("object_path") or "").strip()
+    if not client_id or not period or not object_path:
+        raise ValueError("Mükellef, dönem ve dosya yolu gerekli")
+    if not get_client(client_id):
+        raise ValueError("Mükellef bulunamadı")
+    path, stored_path = materialize_stored_upload(object_path, client_id, period, module, filename)
+    return process_uploaded_file(path, stored_path, client_id, period, module, filename, payload.get("bank_name") or "")
+
+
+def process_uploaded_file(path: Path, stored_path: str, client_id: int, period: str, module: str, filename: str, bank_name: str = "") -> dict:
     doc_id = insert_document_record(client_id, period, module, filename, stored_path, "processing")
     warnings: list[str] = []
     if module == "bank":
-        result = parse_bank_file(path, client_id, period, payload.get("bank_name") or "", get_account_rules(client_id))
+        result = parse_bank_file(path, client_id, period, bank_name, get_account_rules(client_id))
         warnings = result.warnings
         for item in result.rows:
             insert_bank_transaction(doc_id, item)
