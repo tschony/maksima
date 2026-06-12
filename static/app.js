@@ -62,6 +62,7 @@ const VALUE_LABELS = {
   islenmez: "İşlenmez",
   processing: "İşleniyor",
   done: "Tamamlandı",
+  failed: "Başarısız",
 };
 
 async function api(path, options = {}) {

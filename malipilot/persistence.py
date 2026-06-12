@@ -265,6 +265,16 @@ def mark_document_done(document_id: int, warnings: list[str]) -> None:
         conn.commit()
 
 
+def mark_document_failed(document_id: int, warnings: list[str]) -> None:
+    payload = {"status": "failed", "warnings": json.dumps(warnings, ensure_ascii=False)}
+    if using_supabase():
+        client().patch("documents", {"id": f"eq.{document_id}"}, payload)
+        return
+    with connect() as conn:
+        conn.execute("update documents set status = ?, warnings = ? where id = ?", ("failed", payload["warnings"], document_id))
+        conn.commit()
+
+
 def insert_bank_transaction(document_id: int, item: dict[str, Any]) -> None:
     payload = {
         "document_id": document_id,

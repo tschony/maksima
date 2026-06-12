@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import mimetypes
+import os
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -29,6 +30,7 @@ from .persistence import (
     insert_document_record,
     insert_extracted_item_record,
     mark_document_done,
+    mark_document_failed,
     materialize_stored_upload,
     review_needed,
     store_upload,
@@ -303,6 +305,11 @@ def process_uploaded_file(path: Path, stored_path: str, client_id: int, period: 
             for item in ai_items:
                 insert_extracted_item(doc_id, module, item)
         else:
+            if not can_use_local_ocr_fallback():
+                reason = "; ".join(warnings) if warnings else "Gemini yapılandırılmış kayıt döndürmedi"
+                message = f"Belge okunamadı: {reason}. Vercel ortamında yerel OCR kullanılamaz."
+                mark_document_failed(doc_id, [message])
+                raise RuntimeError(message)
             ocr_pages = run_ocr_pages(path)
             if len(ocr_pages) > 1:
                 warnings.append(f"{len(ocr_pages)} sayfa ayrı kayıt olarak işlendi")
@@ -318,6 +325,10 @@ def process_uploaded_file(path: Path, stored_path: str, client_id: int, period: 
                     insert_extracted_item(doc_id, module, item)
     mark_document_done(doc_id, warnings)
     return {"ok": True, "document_id": doc_id, "warnings": warnings}
+
+
+def can_use_local_ocr_fallback() -> bool:
+    return not os.environ.get("VERCEL")
 
 
 def insert_extracted_item(doc_id: int, module: str, item: dict) -> None:

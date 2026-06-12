@@ -30,7 +30,8 @@ Für Z raporları werden entsprechend Datum, Z no, cihaz bilgisi, toplam tutar, 
 5. Das Backend normalisiert und validiert die Felder.
 6. Gute Felder landen direkt in `Fişler` oder `Z Raporları`.
 7. Unsichere, fehlende oder widersprüchliche Felder landen in `Kontrol`.
-8. Wenn Gemini nicht verfügbar ist, nutzt das System die bisherige lokale OCR als Fallback.
+8. Wenn Gemini lokal nicht verfügbar ist, nutzt das System die bisherige lokale OCR als Fallback.
+9. Auf Vercel wird kein leerer OCR-Fallback erzeugt: Wenn Gemini nicht liefert, wird das Dokument als `failed` markiert.
 
 ## Umgebung
 
@@ -69,7 +70,7 @@ Der API-Key darf nie in GitHub, Markdown, Screenshots oder Testdateien gespeiche
 - `malipilot/ai_extractor.py`: Gemini REST-Aufruf, JSON-Schema, Normalisierung.
 - `.env.example`: Vorlage für lokale Gemini-Konfiguration ohne echten Key.
 - `.env.local`: lokale echte Konfiguration, wird nicht versioniert.
-- `malipilot/server.py`: Upload-Ablauf, Gemini zuerst, lokale OCR als Fallback.
+- `malipilot/server.py`: Upload-Ablauf, Gemini zuerst, lokale OCR nur außerhalb von Vercel als Fallback.
 - `static/index.html`: sichtbare Anzeige, ob Gemini oder lokale OCR aktiv ist.
 - `static/app.js`: rendert den aktuellen Belge-okuma-Status.
 - `GEMINI_BELEG_PIPELINE.md`: diese Arbeitsnotiz.
