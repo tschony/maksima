@@ -24,6 +24,8 @@ Für Z raporları werden entsprechend Datum, Z no, cihaz bilgisi, toplam tutar, 
 1. Nutzer lädt auf der Webseite einen Beleg oder Z raporu hoch.
 2. Backend speichert die Datei temporär.
 3. Wenn ein Gemini-Key gesetzt ist, wird die Datei an Gemini geschickt.
+   - Kleine Dateien gehen direkt über `inlineData`.
+   - Größere PDFs gehen über die Gemini Files API, damit Vercel und Gemini nicht an der Base64-Größe scheitern.
 4. Gemini muss streng JSON zurückgeben.
 5. Das Backend normalisiert und validiert die Felder.
 6. Gute Felder landen direkt in `Fişler` oder `Z Raporları`.
@@ -73,6 +75,15 @@ Der API-Key darf nie in GitHub, Markdown, Screenshots oder Testdateien gespeiche
 - `GEMINI_BELEG_PIPELINE.md`: diese Arbeitsnotiz.
 - `README.md`: kurze öffentliche Setup-Anleitung.
 
+## Große PDFs
+
+Für große PDF-Dateien gibt es zwei Grenzen:
+
+- Browser zu Vercel: Dateien über ca. 3 MB werden direkt in Supabase Storage geladen und danach verarbeitet.
+- Vercel zu Gemini: PDFs über ca. 18 MB werden nicht mehr als Base64 `inlineData` gesendet, sondern über die Gemini Files API hochgeladen und dann per `fileUri` verarbeitet.
+
+Wenn eine Datei trotz Files API zu lange dauert, ist der nächste technische Schritt eine asynchrone Job-Warteschlange mit Statusanzeige statt synchronem Warten im Browser.
+
 ## Testnotizen pro Beleg
 
 Bei jedem echten Test mit Ali oder eigenen Belegen sollte festgehalten werden:
@@ -111,8 +122,8 @@ Ein Z raporu bleibt in der Kontrolle, wenn:
 - Das System bucht nicht automatisch.
 - Das System entscheidet nicht steuerlich final.
 - Gemini darf vorschlagen, aber die App validiert.
-- Große PDF-Bündel müssen später über einen robusteren Datei-Upload oder Seitensplitting verarbeitet werden.
-- Vercel speichert aktuell keine Daten dauerhaft; für echten Pilotbetrieb braucht es Postgres/Supabase/Neon plus Dateispeicher.
+- Sehr große PDF-Bündel können trotz Files API länger dauern; dann braucht es Job-Verarbeitung statt synchronem Upload.
+- Vercel speichert die Pilotdaten über Supabase dauerhaft, wenn die Supabase-Umgebungsvariablen gesetzt sind.
 
 ## Nächste Ausbaustufe
 

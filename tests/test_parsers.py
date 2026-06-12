@@ -3,7 +3,13 @@ import unittest
 from pathlib import Path
 
 from malipilot.exporters import write_workbook
-from malipilot.ai_extractor import normalize_gemini_receipt, normalize_gemini_z_report
+from malipilot.ai_extractor import (
+    MAX_INLINE_BYTES,
+    normalize_gemini_receipt,
+    normalize_gemini_z_report,
+    should_use_file_api,
+    unwrap_gemini_file_response,
+)
 from malipilot.ocr import extract_receipt, extract_z_report
 from malipilot.parsers import parse_bank_file, parse_decimal, read_xlsx
 
@@ -129,6 +135,24 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(item["report_date"], "2026-06-05")
         self.assertEqual(item["gross_total"], "720.00")
         self.assertFalse(item["needs_review"])
+
+    def test_large_pdf_uses_gemini_files_api(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf_path = Path(tmp) / "large.pdf"
+            pdf_path.write_bytes(b"%PDF-1.7\n")
+            with pdf_path.open("r+b") as handle:
+                handle.truncate(MAX_INLINE_BYTES + 1)
+            txt_path = Path(tmp) / "large.txt"
+            txt_path.write_text("x", encoding="utf-8")
+            with txt_path.open("r+b") as handle:
+                handle.truncate(MAX_INLINE_BYTES + 1)
+
+            self.assertTrue(should_use_file_api(pdf_path, "application/pdf"))
+            self.assertFalse(should_use_file_api(txt_path, "text/plain"))
+
+    def test_gemini_file_response_unwraps_wrapped_file(self):
+        wrapped = {"file": {"name": "files/test", "uri": "https://example.test/file", "state": "ACTIVE"}}
+        self.assertEqual(unwrap_gemini_file_response(wrapped)["name"], "files/test")
 
     def test_xlsx_roundtrip_for_simple_export(self):
         with tempfile.TemporaryDirectory() as tmp:

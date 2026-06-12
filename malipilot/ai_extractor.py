@@ -4,6 +4,7 @@ import base64
 import json
 import mimetypes
 import os
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -15,8 +16,11 @@ from .parsers import parse_date, parse_decimal
 
 ROOT = Path(__file__).resolve().parents[1]
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+GEMINI_UPLOAD_ENDPOINT = "https://generativelanguage.googleapis.com/upload/v1beta/files"
+GEMINI_FILE_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/{name}"
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
 MAX_INLINE_BYTES = 18 * 1024 * 1024
+GEMINI_FILE_WAIT_SECONDS = 22
 
 
 def gemini_configured() -> bool:
@@ -36,8 +40,6 @@ def extract_with_gemini(path: Path, module: str, client_id: int, period: str, fi
         return [], []
     if not gemini_configured():
         return [], []
-    if path.stat().st_size > MAX_INLINE_BYTES:
-        return [], [f"Dosya Gemini doğrudan okuma sınırını aştı: {path.stat().st_size} bayt"]
 
     result = call_gemini(path, module)
     items = result.get("items") if isinstance(result, dict) else None
@@ -62,6 +64,17 @@ def extract_with_gemini(path: Path, module: str, client_id: int, period: str, fi
 
 def call_gemini(path: Path, module: str) -> dict[str, Any]:
     mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    if should_use_file_api(path, mime_type):
+        file_info = upload_gemini_file(path, mime_type)
+        return generate_with_file(file_info, module)
+    return generate_with_inline_data(path, module, mime_type)
+
+
+def should_use_file_api(path: Path, mime_type: str) -> bool:
+    return mime_type == "application/pdf" and path.stat().st_size > MAX_INLINE_BYTES
+
+
+def generate_with_inline_data(path: Path, module: str, mime_type: str) -> dict[str, Any]:
     request_body = {
         "contents": [
             {
@@ -83,6 +96,142 @@ def call_gemini(path: Path, module: str) -> dict[str, Any]:
             "responseSchema": schema_for(module),
         },
     }
+    payload = json.dumps(request_body).encode("utf-8")
+    request = urllib.request.Request(
+        GEMINI_ENDPOINT.format(model=gemini_model()),
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": gemini_api_key(),
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=55) as response:
+            response_body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Gemini isteği başarısız oldu: {exc.code} {detail[:400]}") from exc
+
+    text = response_text(response_body)
+    if not text:
+        raise RuntimeError("Gemini boş yanıt döndürdü")
+    return json.loads(text)
+
+
+def upload_gemini_file(path: Path, mime_type: str) -> dict[str, Any]:
+    size = path.stat().st_size
+    start_request = urllib.request.Request(
+        f"{GEMINI_UPLOAD_ENDPOINT}?key={gemini_api_key()}",
+        data=json.dumps({"file": {"display_name": path.name}}).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "X-Goog-Upload-Protocol": "resumable",
+            "X-Goog-Upload-Command": "start",
+            "X-Goog-Upload-Header-Content-Length": str(size),
+            "X-Goog-Upload-Header-Content-Type": mime_type,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(start_request, timeout=20) as response:
+            upload_url = response.headers.get("X-Goog-Upload-URL") or response.headers.get("x-goog-upload-url")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Gemini dosya yükleme başlatılamadı: {exc.code} {detail[:400]}") from exc
+
+    if not upload_url:
+        raise RuntimeError("Gemini dosya yükleme adresi alınamadı")
+
+    upload_request = urllib.request.Request(
+        upload_url,
+        data=path.read_bytes(),
+        headers={
+            "Content-Length": str(size),
+            "X-Goog-Upload-Offset": "0",
+            "X-Goog-Upload-Command": "upload, finalize",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(upload_request, timeout=55) as response:
+            body = json.loads(response.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Gemini dosya yükleme başarısız oldu: {exc.code} {detail[:400]}") from exc
+
+    file_info = unwrap_gemini_file_response(body)
+    if not file_info:
+        raise RuntimeError("Gemini dosya yükleme yanıtı okunamadı")
+    return wait_for_gemini_file(file_info)
+
+
+def unwrap_gemini_file_response(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict) and isinstance(value.get("file"), dict):
+        return value["file"]
+    return value if isinstance(value, dict) else {}
+
+
+def wait_for_gemini_file(file_info: dict[str, Any]) -> dict[str, Any]:
+    name = clean_string(file_info.get("name"))
+    if not name:
+        return file_info
+
+    deadline = time.monotonic() + GEMINI_FILE_WAIT_SECONDS
+    current = file_info
+    while clean_string(current.get("state")).upper() == "PROCESSING" and time.monotonic() < deadline:
+        time.sleep(2)
+        request = urllib.request.Request(
+            GEMINI_FILE_ENDPOINT.format(name=name),
+            headers={"x-goog-api-key": gemini_api_key()},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                current = unwrap_gemini_file_response(json.loads(response.read().decode("utf-8") or "{}"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Gemini dosya durumu alınamadı: {exc.code} {detail[:400]}") from exc
+
+    state = clean_string(current.get("state")).upper()
+    if state == "FAILED":
+        raise RuntimeError("Gemini dosya işleme başarısız oldu")
+    if state == "PROCESSING":
+        raise RuntimeError("Gemini dosya işleme zaman aşımına uğradı")
+    return current
+
+
+def generate_with_file(file_info: dict[str, Any], module: str) -> dict[str, Any]:
+    file_uri = clean_string(file_info.get("uri"))
+    mime_type = clean_string(file_info.get("mimeType") or file_info.get("mime_type")) or "application/pdf"
+    if not file_uri:
+        raise RuntimeError("Gemini dosya adresi alınamadı")
+
+    request_body = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": prompt_for(module)},
+                    {
+                        "file_data": {
+                            "mime_type": mime_type,
+                            "file_uri": file_uri,
+                        }
+                    },
+                ],
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.0,
+            "responseMimeType": "application/json",
+            "responseSchema": schema_for(module),
+        },
+    }
+    return post_generate_content(request_body)
+
+
+def post_generate_content(request_body: dict[str, Any]) -> dict[str, Any]:
     payload = json.dumps(request_body).encode("utf-8")
     request = urllib.request.Request(
         GEMINI_ENDPOINT.format(model=gemini_model()),

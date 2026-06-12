@@ -51,7 +51,8 @@ Supabase şeması `supabase_schema.sql` dosyasındadır. Bu değişkenler yoksa 
 - Anonim mükellef oluşturma.
 - Banka dosyası yükleme ve satırları standart formata çevirme.
 - Z raporu ve fiş/gider belgesi yükleme.
-- Yerel OCR ile alanları tahmin etme.
+- Gemini varsa belge alanlarını doğrudan çıkarma; yoksa yerel OCR ile alanları tahmin etme.
+- Büyük PDF'leri önce Supabase Storage'a, ardından Gemini Files API'ye yönlendirme.
 - Düşük güvenli veya eksik alanları kontrol kuyruğuna alma.
 - Düzeltmeleri saklama.
 - Mükellef ve dönem bazlı tablo çıktısı üretme.
