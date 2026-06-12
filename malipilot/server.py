@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .ai_extractor import GeminiExtractionError, extract_with_gemini, gemini_configured, gemini_model
+from .ai_extractor import AI_EXTRACTION_ERRORS, ai_model, ai_provider, extract_with_ai
 from .exporters import export_filename, write_workbook
 from .ocr import extract_receipt, extract_z_report, run_ocr_pages
 from .parsers import parse_bank_file
@@ -161,10 +161,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def api_state() -> dict:
+    provider = ai_provider()
     return api_state_payload(
         {
-            "provider": "gemini" if gemini_configured() else "yerel",
-            "model": gemini_model() if gemini_configured() else "",
+            "provider": provider,
+            "model": ai_model() if provider != "yerel" else "",
         }
     )
 
@@ -324,22 +325,22 @@ def process_uploaded_file(path: Path, stored_path: str, client_id: int, period: 
         else:
             ai_items, ai_warnings = [], []
             try:
-                ai_items, ai_warnings, diagnostic = extract_with_gemini(path, module, client_id, period, filename)
+                ai_items, ai_warnings, diagnostic = extract_with_ai(path, module, client_id, period, filename)
                 record_extraction_run(doc_id, diagnostic, warnings)
                 warnings.extend(ai_warnings)
-            except GeminiExtractionError as exc:
+            except AI_EXTRACTION_ERRORS as exc:
                 record_extraction_run(doc_id, exc.diagnostic, warnings)
-                warnings.append(f"Gemini kullanılamadı, yerel OCR denendi: {exc}")
+                warnings.append(f"Belge okuma kullanılamadı: {friendly_upload_error(str(exc))}")
             except Exception as exc:
-                warnings.append(f"Gemini kullanılamadı, yerel OCR denendi: {exc}")
+                warnings.append(f"Belge okuma kullanılamadı: {friendly_upload_error(str(exc))}")
 
             if ai_items:
                 for item in ai_items:
                     insert_extracted_item(doc_id, module, item)
             else:
                 if not can_use_local_ocr_fallback():
-                    reason = "; ".join(warnings) if warnings else "Gemini yapılandırılmış kayıt döndürmedi"
-                    message = f"Belge okunamadı: {reason}. Vercel ortamında yerel OCR kullanılamaz."
+                    reason = "; ".join(dedupe_messages(warnings)) if warnings else "Belge okuma yapılandırılmış kayıt döndürmedi"
+                    message = f"Belge okunamadı: {friendly_upload_error(reason)}"
                     mark_document_failed(doc_id, [message])
                     raise RuntimeError(message)
                 ocr_pages = run_ocr_pages(path)
@@ -369,11 +370,39 @@ def record_extraction_run(document_id: int, diagnostic: dict, warnings: list[str
     try:
         insert_extraction_run_record(document_id, diagnostic)
     except Exception as exc:
-        warnings.append(f"Gemini tanılama kaydı saklanamadı: {exc}")
+        warnings.append(f"Belge okuma tanılama kaydı saklanamadı: {exc}")
 
 
 def can_use_local_ocr_fallback() -> bool:
     return not os.environ.get("VERCEL")
+
+
+def friendly_upload_error(message: str) -> str:
+    text = str(message or "").strip()
+    if "401" in text or "invalid_api_key" in text or "OpenAI anahtarı" in text:
+        return "OpenAI anahtarı geçersiz veya eksik."
+    if "OpenAI" in text and ("429" in text or "rate" in text or "limit" in text):
+        return "OpenAI kullanım sınırı geçici olarak doldu. Birkaç dakika sonra tekrar dene."
+    if "OpenAI" in text and ("500" in text or "502" in text or "503" in text or "504" in text):
+        return "OpenAI geçici olarak yanıt veremedi. Birkaç dakika sonra tekrar dene."
+    if "503" in text or "UNAVAILABLE" in text or "high demand" in text:
+        return "Gemini şu anda yoğun. Birkaç dakika sonra tekrar dene."
+    if "429" in text or "RESOURCE_EXHAUSTED" in text:
+        return "Gemini kullanım sınırı geçici olarak doldu. Birkaç dakika sonra tekrar dene."
+    if "{\"error\"" in text:
+        return "Belge okuma servisi geçici olarak yanıt veremedi. Birkaç dakika sonra tekrar dene."
+    return text[:260]
+
+
+def dedupe_messages(messages: list[str]) -> list[str]:
+    result = []
+    seen = set()
+    for message in messages:
+        text = friendly_upload_error(message)
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return result
 
 
 def insert_extracted_item(doc_id: int, module: str, item: dict) -> None:

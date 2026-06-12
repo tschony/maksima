@@ -11,7 +11,7 @@ Die Live-Seite darf keine Belege und Ergebnisse verlieren, wenn die Seite aktual
 - Vercel hostet die Web-App und Python-API.
 - Supabase Postgres speichert strukturierte Daten.
 - Supabase Storage speichert hochgeladene Dokumente.
-- Gemini liest Fiş/Z raporu und gibt strukturierte Felder zurück.
+- ChatGPT liest Fiş/Z raporu und gibt strukturierte Felder zurück.
 
 ## Supabase
 
@@ -49,13 +49,14 @@ In Vercel unter Project Settings -> Environment Variables eintragen:
 SUPABASE_URL=https://ybrombuglnzfkrgwtdec.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=...
 SUPABASE_STORAGE_BUCKET=documents
-GEMINI_API_KEY=...
-MALIYARDIMCI_GEMINI_MODEL=gemini-3.5-flash
+OPENAI_API_KEY=...
+MALIYARDIMCI_AI_PROVIDER=openai
+MALIYARDIMCI_OPENAI_MODEL=gpt-5.4-mini
 ```
 
 Alle Variablen für `Production and Preview` setzen.
 
-`SUPABASE_SERVICE_ROLE_KEY` und `GEMINI_API_KEY` müssen geheim bleiben. Sie gehören nie in GitHub, Screenshots oder Frontend-Code.
+`SUPABASE_SERVICE_ROLE_KEY` und `OPENAI_API_KEY` müssen geheim bleiben. Sie gehören nie in GitHub, Screenshots oder Frontend-Code.
 
 Den `SUPABASE_SERVICE_ROLE_KEY` findest du in Supabase unter:
 

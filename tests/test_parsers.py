@@ -9,9 +9,13 @@ from malipilot.ai_extractor import (
     MAX_INLINE_BYTES,
     MAX_PDF_BYTES,
     extract_with_gemini,
+    friendly_openai_error,
     gemini_diagnostic,
     normalize_gemini_receipt,
     normalize_gemini_z_report,
+    openai_request_body,
+    openai_response_text,
+    openai_schema_for,
     schema_for,
     should_use_file_api,
     unwrap_gemini_file_response,
@@ -129,6 +133,63 @@ class ParserTests(unittest.TestCase):
         payment_schema = schema["properties"]["items"]["items"]["properties"]["payment_method"]
         self.assertNotIn("", payment_schema["enum"])
         self.assertIn("belirsiz", payment_schema["enum"])
+
+    def test_openai_receipt_schema_is_strict_ready(self):
+        schema = openai_schema_for("receipt")
+        item_schema = schema["properties"]["items"]["items"]
+        self.assertFalse(schema["additionalProperties"])
+        self.assertFalse(item_schema["additionalProperties"])
+        self.assertEqual(set(item_schema["required"]), set(item_schema["properties"].keys()))
+        self.assertIn("belirsiz", item_schema["properties"]["payment_method"]["enum"])
+
+    def test_openai_image_request_uses_responses_input_image(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "fis.jpeg"
+            image_path.write_bytes(b"fake-image")
+
+            old_model = os.environ.get("MALIYARDIMCI_OPENAI_MODEL")
+            os.environ["MALIYARDIMCI_OPENAI_MODEL"] = "test-model"
+            try:
+                body = openai_request_body(image_path, "receipt", "image/jpeg")
+            finally:
+                if old_model is None:
+                    os.environ.pop("MALIYARDIMCI_OPENAI_MODEL", None)
+                else:
+                    os.environ["MALIYARDIMCI_OPENAI_MODEL"] = old_model
+
+            content = body["input"][0]["content"]
+            self.assertEqual(body["model"], "test-model")
+            self.assertEqual(content[1]["type"], "input_image")
+            self.assertTrue(content[1]["image_url"].startswith("data:image/jpeg;base64,"))
+            self.assertEqual(body["text"]["format"]["type"], "json_schema")
+
+    def test_openai_pdf_request_uses_input_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf_path = Path(tmp) / "z.pdf"
+            pdf_path.write_bytes(b"%PDF-1.7\n")
+
+            body = openai_request_body(pdf_path, "z", "application/pdf")
+            content = body["input"][0]["content"]
+
+            self.assertEqual(content[1]["type"], "input_file")
+            self.assertEqual(content[1]["filename"], "z.pdf")
+            self.assertTrue(content[1]["file_data"].startswith("data:application/pdf;base64,"))
+
+    def test_openai_response_text_extracts_output_text(self):
+        response = {
+            "output": [
+                {
+                    "content": [
+                        {"type": "output_text", "text": '{"items": [], "document_notes": ""}'},
+                    ]
+                }
+            ]
+        }
+        self.assertEqual(openai_response_text(response), '{"items": [], "document_notes": ""}')
+
+    def test_openai_error_message_is_friendly(self):
+        detail = '{"error":{"code":"rate_limit_exceeded","message":"Too many requests","type":"rate_limit_error"}}'
+        self.assertEqual(friendly_openai_error(429, detail), "OpenAI kullanım sınırı geçici olarak doldu. Birkaç dakika sonra tekrar dene.")
 
     def test_gemini_receipt_normalization_treats_unknown_payment_as_blank(self):
         item = normalize_gemini_receipt(

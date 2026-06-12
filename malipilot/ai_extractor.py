@@ -18,16 +18,72 @@ ROOT = Path(__file__).resolve().parents[1]
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 GEMINI_UPLOAD_ENDPOINT = "https://generativelanguage.googleapis.com/upload/v1beta/files"
 GEMINI_FILE_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/{name}"
+OPENAI_RESPONSES_ENDPOINT = "https://api.openai.com/v1/responses"
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
+DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
 MAX_INLINE_BYTES = 18 * 1024 * 1024
 MAX_PDF_BYTES = 50 * 1024 * 1024
 GEMINI_FILE_WAIT_SECONDS = 22
+GEMINI_RETRY_DELAYS = (2, 4)
+TRANSIENT_GEMINI_STATUS_CODES = {429, 500, 502, 503, 504}
+OPENAI_RETRY_DELAYS = (2, 4)
+TRANSIENT_OPENAI_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 class GeminiExtractionError(RuntimeError):
     def __init__(self, message: str, diagnostic: dict[str, Any]):
         super().__init__(message)
         self.diagnostic = diagnostic
+
+
+class OpenAIExtractionError(RuntimeError):
+    def __init__(self, message: str, diagnostic: dict[str, Any]):
+        super().__init__(message)
+        self.diagnostic = diagnostic
+
+
+AI_EXTRACTION_ERRORS = (GeminiExtractionError, OpenAIExtractionError)
+
+
+def ai_provider() -> str:
+    requested = clean_string(os.environ.get("MALIYARDIMCI_AI_PROVIDER") or os.environ.get("AI_PROVIDER")).lower()
+    if requested == "openai":
+        return "openai" if openai_configured() else "yerel"
+    if requested == "gemini":
+        return "gemini" if gemini_configured() else "yerel"
+    if openai_configured():
+        return "openai"
+    return "yerel"
+
+
+def ai_model() -> str:
+    provider = ai_provider()
+    if provider == "openai":
+        return openai_model()
+    if provider == "gemini":
+        return gemini_model()
+    return ""
+
+
+def extract_with_ai(path: Path, module: str, client_id: int, period: str, filename: str) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
+    provider = ai_provider()
+    if provider == "openai":
+        return extract_with_openai(path, module, client_id, period, filename)
+    if provider == "gemini":
+        return extract_with_gemini(path, module, client_id, period, filename)
+    return [], [], {}
+
+
+def openai_configured() -> bool:
+    return bool(openai_api_key())
+
+
+def openai_model() -> str:
+    return os.environ.get("MALIYARDIMCI_OPENAI_MODEL") or os.environ.get("OPENAI_MODEL") or DEFAULT_OPENAI_MODEL
+
+
+def openai_api_key() -> str:
+    return os.environ.get("OPENAI_API_KEY") or ""
 
 
 def gemini_configured() -> bool:
@@ -40,6 +96,71 @@ def gemini_model() -> str:
 
 def gemini_api_key() -> str:
     return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
+
+
+def extract_with_openai(path: Path, module: str, client_id: int, period: str, filename: str) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
+    if module not in {"receipt", "z"}:
+        return [], [], {}
+    if not openai_configured():
+        return [], [], {}
+
+    started = time.monotonic()
+    diagnostic = openai_diagnostic(path, module, filename)
+    try:
+        if path.stat().st_size > MAX_PDF_BYTES:
+            raise RuntimeError(f"PDF sınırı aşılıyor: {path.stat().st_size} bayt")
+        result = call_openai(path, module)
+    except Exception as exc:
+        diagnostic.update(
+            {
+                "status": "failed",
+                "duration_ms": elapsed_ms(started),
+                "error_message": str(exc)[:2000],
+            }
+        )
+        raise OpenAIExtractionError(str(exc), diagnostic) from exc
+
+    items = result.get("items") if isinstance(result, dict) else None
+    diagnostic["raw_response"] = truncate_json(result)
+    diagnostic["duration_ms"] = elapsed_ms(started)
+    if not isinstance(items, list) or not items:
+        diagnostic["status"] = "failed"
+        diagnostic["error_message"] = "ChatGPT yapılandırılmış kayıt döndürmedi"
+        return [], ["ChatGPT yapılandırılmış kayıt döndürmedi"], diagnostic
+
+    normalized = []
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            continue
+        source_name = numbered_source(filename, "Fiş" if module == "receipt" else "Z Raporu", index, len(items))
+        if module == "receipt":
+            normalized.append(normalize_gemini_receipt(item, client_id, period, source_name))
+        else:
+            normalized.append(normalize_gemini_z_report(item, client_id, period, source_name))
+    diagnostic["status"] = "ok"
+    diagnostic["item_count"] = len(normalized)
+    warnings = [f"ChatGPT {openai_model()} ile işlendi"]
+    notes = result.get("document_notes") if isinstance(result, dict) else ""
+    if notes:
+        warnings.append(str(notes)[:300])
+    return normalized, warnings, diagnostic
+
+
+def openai_diagnostic(path: Path, module: str, filename: str) -> dict[str, Any]:
+    mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return {
+        "provider": "openai",
+        "model": openai_model(),
+        "module": module,
+        "file_name": filename,
+        "file_size": path.stat().st_size,
+        "input_method": "input_file" if mime_type == "application/pdf" else "input_image",
+        "status": "started",
+        "item_count": 0,
+        "duration_ms": 0,
+        "raw_response": "",
+        "error_message": "",
+    }
 
 
 def extract_with_gemini(path: Path, module: str, client_id: int, period: str, filename: str) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
@@ -124,6 +245,61 @@ def call_gemini(path: Path, module: str) -> dict[str, Any]:
     return generate_with_inline_data(path, module, mime_type)
 
 
+def call_openai(path: Path, module: str) -> dict[str, Any]:
+    mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    if not openai_supported_input(mime_type):
+        raise RuntimeError("Bu belge türü ChatGPT okuması için desteklenmiyor")
+    response_body = post_openai_response(openai_request_body(path, module, mime_type))
+    text = openai_response_text(response_body)
+    if not text:
+        raise RuntimeError("ChatGPT boş yanıt döndürdü")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("ChatGPT yapılandırılmış JSON döndürmedi") from exc
+
+
+def openai_supported_input(mime_type: str) -> bool:
+    return mime_type == "application/pdf" or mime_type.startswith("image/")
+
+
+def openai_request_body(path: Path, module: str, mime_type: str) -> dict[str, Any]:
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    if mime_type == "application/pdf":
+        file_part = {
+            "type": "input_file",
+            "filename": path.name,
+            "file_data": f"data:{mime_type};base64,{encoded}",
+        }
+    else:
+        file_part = {
+            "type": "input_image",
+            "image_url": f"data:{mime_type};base64,{encoded}",
+            "detail": os.environ.get("MALIYARDIMCI_OPENAI_IMAGE_DETAIL", "high"),
+        }
+    return {
+        "model": openai_model(),
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": prompt_for(module)},
+                    file_part,
+                ],
+            }
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": f"maliyardimci_{module}_extraction",
+                "strict": True,
+                "schema": openai_schema_for(module),
+            }
+        },
+        "store": False,
+    }
+
+
 def should_use_file_api(path: Path, mime_type: str) -> bool:
     return mime_type == "application/pdf" and path.stat().st_size > MAX_INLINE_BYTES
 
@@ -150,27 +326,7 @@ def generate_with_inline_data(path: Path, module: str, mime_type: str) -> dict[s
             "responseSchema": schema_for(module),
         },
     }
-    payload = json.dumps(request_body).encode("utf-8")
-    request = urllib.request.Request(
-        GEMINI_ENDPOINT.format(model=gemini_model()),
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "x-goog-api-key": gemini_api_key(),
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=55) as response:
-            response_body = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Gemini isteği başarısız oldu: {exc.code} {detail[:400]}") from exc
-
-    text = response_text(response_body)
-    if not text:
-        raise RuntimeError("Gemini boş yanıt döndürdü")
-    return json.loads(text)
+    return post_generate_content(request_body)
 
 
 def upload_gemini_file(path: Path, mime_type: str) -> dict[str, Any]:
@@ -287,26 +443,125 @@ def generate_with_file(file_info: dict[str, Any], module: str) -> dict[str, Any]
 
 def post_generate_content(request_body: dict[str, Any]) -> dict[str, Any]:
     payload = json.dumps(request_body).encode("utf-8")
-    request = urllib.request.Request(
-        GEMINI_ENDPOINT.format(model=gemini_model()),
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "x-goog-api-key": gemini_api_key(),
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=55) as response:
-            response_body = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Gemini isteği başarısız oldu: {exc.code} {detail[:400]}") from exc
+    response_body = post_gemini_json(payload)
 
     text = response_text(response_body)
     if not text:
         raise RuntimeError("Gemini boş yanıt döndürdü")
     return json.loads(text)
+
+
+def post_gemini_json(payload: bytes) -> dict[str, Any]:
+    last_message = "Gemini isteği başarısız oldu"
+    for attempt in range(len(GEMINI_RETRY_DELAYS) + 1):
+        request = urllib.request.Request(
+            GEMINI_ENDPOINT.format(model=gemini_model()),
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": gemini_api_key(),
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=55) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            last_message = friendly_gemini_error(exc.code, detail)
+            if is_transient_gemini_error(exc.code, detail) and attempt < len(GEMINI_RETRY_DELAYS):
+                time.sleep(GEMINI_RETRY_DELAYS[attempt])
+                continue
+            raise RuntimeError(last_message) from exc
+    raise RuntimeError(last_message)
+
+
+def post_openai_response(request_body: dict[str, Any]) -> dict[str, Any]:
+    payload = json.dumps(request_body).encode("utf-8")
+    last_message = "ChatGPT isteği başarısız oldu"
+    for attempt in range(len(OPENAI_RETRY_DELAYS) + 1):
+        request = urllib.request.Request(
+            OPENAI_RESPONSES_ENDPOINT,
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {openai_api_key()}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=75) as response:
+                return json.loads(response.read().decode("utf-8") or "{}")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            last_message = friendly_openai_error(exc.code, detail)
+            if exc.code in TRANSIENT_OPENAI_STATUS_CODES and attempt < len(OPENAI_RETRY_DELAYS):
+                time.sleep(OPENAI_RETRY_DELAYS[attempt])
+                continue
+            raise RuntimeError(last_message) from exc
+    raise RuntimeError(last_message)
+
+
+def friendly_openai_error(status_code: int, detail: str) -> str:
+    parsed = parsed_openai_error(detail)
+    code = parsed.get("code", "")
+    message = parsed.get("message", "")
+    if status_code == 401:
+        return "OpenAI anahtarı geçersiz veya eksik."
+    if status_code == 429:
+        return "OpenAI kullanım sınırı geçici olarak doldu. Birkaç dakika sonra tekrar dene."
+    if status_code in {500, 502, 503, 504}:
+        return "OpenAI geçici olarak yanıt veremedi. Birkaç dakika sonra tekrar dene."
+    if status_code == 400:
+        return f"OpenAI isteği geçersiz oldu: {message[:220] or code or 'ayarlar kontrol edilmeli'}"
+    return f"OpenAI isteği başarısız oldu: HTTP {status_code}"
+
+
+def parsed_openai_error(detail: str) -> dict[str, str]:
+    try:
+        payload = json.loads(detail or "{}")
+    except json.JSONDecodeError:
+        return {}
+    error = payload.get("error") if isinstance(payload, dict) else {}
+    if not isinstance(error, dict):
+        return {}
+    return {
+        "code": clean_string(error.get("code")),
+        "message": clean_string(error.get("message")),
+        "type": clean_string(error.get("type")),
+    }
+
+
+def is_transient_gemini_error(status_code: int, detail: str) -> bool:
+    status = parsed_gemini_error(detail).get("status", "")
+    return status_code in TRANSIENT_GEMINI_STATUS_CODES or status in {"UNAVAILABLE", "RESOURCE_EXHAUSTED", "INTERNAL", "DEADLINE_EXCEEDED"}
+
+
+def friendly_gemini_error(status_code: int, detail: str) -> str:
+    parsed = parsed_gemini_error(detail)
+    status = parsed.get("status", "")
+    message = parsed.get("message", "")
+    if status_code in {429, 503} or status in {"UNAVAILABLE", "RESOURCE_EXHAUSTED"}:
+        return "Gemini şu anda yoğun. Birkaç dakika sonra tekrar dene."
+    if status_code in {500, 502, 504} or status in {"INTERNAL", "DEADLINE_EXCEEDED"}:
+        return "Gemini geçici olarak yanıt veremedi. Birkaç dakika sonra tekrar dene."
+    if status_code == 400:
+        return f"Gemini isteği geçersiz oldu: {message[:220] or 'ayarlar kontrol edilmeli'}"
+    return f"Gemini isteği başarısız oldu: HTTP {status_code}"
+
+
+def parsed_gemini_error(detail: str) -> dict[str, str]:
+    try:
+        payload = json.loads(detail or "{}")
+    except json.JSONDecodeError:
+        return {}
+    error = payload.get("error") if isinstance(payload, dict) else {}
+    if not isinstance(error, dict):
+        return {}
+    return {
+        "status": clean_string(error.get("status")),
+        "message": clean_string(error.get("message")),
+    }
 
 
 def response_text(response_body: dict[str, Any]) -> str:
@@ -318,20 +573,97 @@ def response_text(response_body: dict[str, Any]) -> str:
     return ""
 
 
+def openai_response_text(response_body: dict[str, Any]) -> str:
+    output_text = response_body.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+    for output in response_body.get("output", []):
+        if not isinstance(output, dict):
+            continue
+        for part in output.get("content", []):
+            if isinstance(part, dict) and part.get("type") == "output_text" and part.get("text"):
+                return str(part["text"]).strip()
+    return ""
+
+
 def prompt_for(module: str) -> str:
     if module == "z":
         return (
             "Türkçe mali müşavir asistanısın. Yüklenen belge bir Z raporu olabilir. "
             "Belgedeki her Z raporunu ayrı kayıt olarak çıkar. Emin olmadığın alanı boş bırak. "
             "Tutarları 1234.56 formatında döndür. Tarihleri YYYY-MM-DD formatında döndür. "
-            "Tahmin uydurma; eksik veya okunamayan alan varsa needs_review=true yap."
+            "Tahmin uydurma; eksik veya okunamayan alan varsa needs_review=true yap. "
+            "Şemadaki bütün alanları döndür; bilinmeyen metin alanları boş string olsun."
         )
     return (
         "Türkçe mali müşavir asistanısın. Yüklenen belge fiş, e-arşiv fatura veya gider belgesi olabilir. "
         "Belgedeki her ayrı fişi ayrı kayıt olarak çıkar. VKN/TCKN satıcıya ait değilse boş bırak. "
         "Tutarları 1234.56 formatında döndür. Tarihleri YYYY-MM-DD formatında döndür. "
-        "Muhasebe kararı verme; sadece belgeyi hazırla. Emin olmadığın alanı boş bırak ve needs_review=true yap."
+        "Muhasebe kararı verme; sadece belgeyi hazırla. Emin olmadığın alanı boş bırak ve needs_review=true yap. "
+        "Şemadaki bütün alanları döndür; bilinmeyen metin alanları boş string olsun."
     )
+
+
+def openai_schema_for(module: str) -> dict[str, Any]:
+    if module == "z":
+        item_properties = {
+            "report_date": {"type": "string"},
+            "device_brand": {"type": "string"},
+            "device_serial": {"type": "string"},
+            "z_no": {"type": "string"},
+            "gross_total": {"type": "string"},
+            "vat_lines": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"rate": {"type": "string"}, "amount": {"type": "string"}},
+                    "required": ["rate", "amount"],
+                    "additionalProperties": False,
+                },
+            },
+            "payment_breakdown": {
+                "type": "object",
+                "properties": {"cash": {"type": "string"}, "card": {"type": "string"}, "pos": {"type": "string"}},
+                "required": ["cash", "card", "pos"],
+                "additionalProperties": False,
+            },
+            "confidence": {"type": "number"},
+            "needs_review": {"type": "boolean"},
+            "raw_text": {"type": "string"},
+            "notes": {"type": "string"},
+        }
+    else:
+        item_properties = {
+            "receipt_date": {"type": "string"},
+            "merchant_name": {"type": "string"},
+            "vkn_tckn": {"type": "string"},
+            "document_no": {"type": "string"},
+            "gross_total": {"type": "string"},
+            "vat_total": {"type": "string"},
+            "payment_method": {"type": "string", "enum": ["belirsiz", "nakit", "kart", "havale", "diger"]},
+            "bookkeeping_status": {"type": "string", "enum": ["uygun", "eksik", "okunamadi", "manuel_kontrol", "islenmez"]},
+            "confidence": {"type": "number"},
+            "needs_review": {"type": "boolean"},
+            "raw_text": {"type": "string"},
+            "notes": {"type": "string"},
+        }
+    return {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": item_properties,
+                    "required": list(item_properties.keys()),
+                    "additionalProperties": False,
+                },
+            },
+            "document_notes": {"type": "string"},
+        },
+        "required": ["items", "document_notes"],
+        "additionalProperties": False,
+    }
 
 
 def schema_for(module: str) -> dict[str, Any]:

@@ -1,5 +1,7 @@
 # Gemini Belge Okuma Planı
 
+> Veraltet: Der aktive Standard ist jetzt OpenAI/ChatGPT mit `OPENAI_API_KEY` und `MALIYARDIMCI_AI_PROVIDER=openai`. Gemini wird nur noch genutzt, wenn `MALIYARDIMCI_AI_PROVIDER=gemini` bewusst gesetzt wird.
+
 Stand: 2026-06-12
 
 ## Ziel

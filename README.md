@@ -22,17 +22,25 @@ http://127.0.0.1:8765
 python3 -m unittest discover -s tests
 ```
 
-## Gemini ile Belge Okuma
+## ChatGPT ile Belge Okuma
 
-Fiş ve Z raporu yüklemelerinde Gemini kullanmak için:
+Fiş ve Z raporu yüklemelerinde OpenAI/ChatGPT kullanmak için:
 
 ```bash
 cp .env.example .env.local
-# .env.local dosyasına gerçek Gemini key girilir
+# .env.local dosyasına gerçek OpenAI key girilir
 python3 -m malipilot.server
 ```
 
-Vercel'de aynı değerler Project Settings -> Environment Variables bölümüne eklenir. Ayrıntılı akış için `GEMINI_BELEG_PIPELINE.md` dosyasına bak.
+Vercel'de aynı değerler Project Settings -> Environment Variables bölümüne eklenir:
+
+```text
+OPENAI_API_KEY=...
+MALIYARDIMCI_AI_PROVIDER=openai
+MALIYARDIMCI_OPENAI_MODEL=gpt-5.4-mini
+```
+
+`MALIYARDIMCI_OPENAI_MODEL` boş bırakılırsa varsayılan olarak `gpt-5.4-mini` kullanılır. Gemini yalnızca `MALIYARDIMCI_AI_PROVIDER=gemini` seçilirse devreye alınmalıdır.
 
 ## Kalıcı Veri Saklama
 
@@ -51,9 +59,9 @@ Supabase şeması `supabase_schema.sql` dosyasındadır. Bu değişkenler yoksa 
 - Anonim mükellef oluşturma.
 - Banka dosyası yükleme ve satırları standart formata çevirme.
 - Z raporu ve fiş/gider belgesi yükleme.
-- Gemini varsa belge alanlarını doğrudan çıkarma; yoksa yerel OCR ile alanları tahmin etme.
-- Büyük PDF'leri önce Supabase Storage'a, ardından Gemini Files API'ye yönlendirme.
-- Gemini okuma denemelerini `extraction_runs` tablosunda denetlenebilir şekilde saklama.
+- ChatGPT varsa belge alanlarını doğrudan çıkarma; yoksa yerel OCR ile alanları tahmin etme.
+- Büyük PDF'leri önce Supabase Storage'a, ardından ChatGPT dosya okuma akışına yönlendirme.
+- Belge okuma denemelerini `extraction_runs` tablosunda denetlenebilir şekilde saklama.
 - Düşük güvenli veya eksik alanları kontrol kuyruğuna alma.
 - Düzeltmeleri saklama.
 - Mükellef ve dönem bazlı tablo çıktısı üretme.

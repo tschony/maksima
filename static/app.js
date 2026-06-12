@@ -180,10 +180,13 @@ function renderCounts() {
   const aiStatus = $("#ai-status");
   if (aiStatus) {
     const storage = state.storage?.provider === "supabase" ? "Supabase" : "yerel kayıt";
-    aiStatus.textContent =
-      state.ai?.provider === "gemini"
-        ? `Belge okuma: Gemini (${state.ai.model}) · Veri: ${storage}`
-        : `Belge okuma: yerel okuma · Veri: ${storage}`;
+    const providerText =
+      state.ai?.provider === "openai"
+        ? `ChatGPT (${state.ai.model})`
+        : state.ai?.provider === "gemini"
+          ? `Gemini (${state.ai.model})`
+          : "yerel okuma";
+    aiStatus.textContent = `Belge okuma: ${providerText} · Veri: ${storage}`;
   }
 }
 
@@ -776,6 +779,34 @@ function formatFileSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function friendlyUploadMessage(message) {
+  const text = String(message || "").trim();
+  if (!text) return "";
+  if (/OpenAI anahtarı|invalid_api_key|401/i.test(text)) {
+    return "OpenAI anahtarı geçersiz veya eksik.";
+  }
+  if (/OpenAI.*(429|rate|limit|kullanım sınırı)/i.test(text)) {
+    return "OpenAI kullanım sınırı geçici olarak doldu. Birkaç dakika sonra tekrar dene.";
+  }
+  if (/OpenAI.*(500|502|503|504|geçici olarak yanıt)/i.test(text)) {
+    return "OpenAI geçici olarak yanıt veremedi. Birkaç dakika sonra tekrar dene.";
+  }
+  if (/Gemini.*(503|UNAVAILABLE|high demand)|Gemini şu anda yoğun/i.test(text)) {
+    return "Gemini şu anda yoğun. Birkaç dakika sonra tekrar dene.";
+  }
+  if (/Gemini.*(429|RESOURCE_EXHAUSTED)/i.test(text)) {
+    return "Gemini kullanım sınırı geçici olarak doldu. Birkaç dakika sonra tekrar dene.";
+  }
+  if (text.includes('{"error"') || text.includes('"error"')) {
+    return "Belge okuma servisi geçici olarak yanıt veremedi. Birkaç dakika sonra tekrar dene.";
+  }
+  return text.length > 260 ? `${text.slice(0, 260)}...` : text;
+}
+
+function uniqueValues(values) {
+  return Array.from(new Set(values.map(friendlyUploadMessage).filter(Boolean)));
+}
+
 function switchView(viewName, shouldScroll = true) {
   if (!selectedClient()) {
     renderShell();
@@ -898,19 +929,19 @@ $("#upload-form").addEventListener("submit", async (event) => {
       showMessage(`${index + 1}/${files.length} işleniyor: ${file.name}`);
       try {
         const result = await processUploadFile(file, basePayload);
-        results.push({ file: file.name, ok: true, warnings: result.warnings || [] });
+        results.push({ file: file.name, ok: true, warnings: (result.warnings || []).map(friendlyUploadMessage) });
       } catch (error) {
-        const message = error.name === "AbortError" ? "İşlem zaman aşımına uğradı." : error.message;
+        const message = error.name === "AbortError" ? "İşlem zaman aşımına uğradı." : friendlyUploadMessage(error.message);
         results.push({ file: file.name, ok: false, warnings: [message] });
       }
     }
     const okCount = results.filter((result) => result.ok).length;
     const failed = results.filter((result) => !result.ok);
-    const warnings = results.flatMap((result) => result.warnings.map((warning) => `${result.file}: ${warning}`));
+    const warnings = uniqueValues(results.flatMap((result) => result.warnings));
     const summary = failed.length
-      ? `${okCount}/${files.length} dosya işlendi. Başarısız: ${failed.map((result) => result.file).join(", ")}`
+      ? `${okCount}/${files.length} dosya işlendi. İşlenemeyen dosyalar: ${failed.map((result) => result.file).join(", ")}`
       : `${okCount} dosya işlendi. Kütüphane ve kontrol kuyruğu güncellendi.`;
-    showMessage(warnings.length ? `${summary} Uyarılar: ${warnings.join(" | ")}` : summary);
+    showMessage(warnings.length ? `${summary} Not: ${warnings.join(" ")}` : summary);
     event.target.reset();
     $("#file-display").textContent = "Henüz dosya seçilmedi";
     const selectedRadio = $(`.module-option input[value="${moduleName}"]`);
@@ -919,7 +950,10 @@ $("#upload-form").addEventListener("submit", async (event) => {
     await refresh();
     switchView(filteredReviewItems().length ? "review" : "library");
   } catch (error) {
-    const message = error.name === "AbortError" ? "İşlem zaman aşımına uğradı. Daha küçük dosya veya doğrudan Supabase yükleme gerekli." : error.message;
+    const message =
+      error.name === "AbortError"
+        ? "İşlem zaman aşımına uğradı. Daha küçük dosya veya doğrudan Supabase yükleme gerekli."
+        : friendlyUploadMessage(error.message);
     showMessage(message);
   } finally {
     submitButton.disabled = false;

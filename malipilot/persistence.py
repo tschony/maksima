@@ -302,7 +302,7 @@ def mark_document_failed(document_id: int, warnings: list[str]) -> None:
 def insert_extraction_run_record(document_id: int, diagnostic: dict[str, Any]) -> None:
     payload = {
         "document_id": document_id,
-        "provider": diagnostic.get("provider") or "gemini",
+        "provider": diagnostic.get("provider") or "unknown",
         "model": diagnostic.get("model") or "",
         "module": diagnostic.get("module") or "",
         "file_name": diagnostic.get("file_name") or "",
