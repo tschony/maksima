@@ -16,11 +16,30 @@ Open:
 http://127.0.0.1:8765
 ```
 
+## Laufzeit-Architektur
+
+Bu projede iki farklı API giriş noktası vardır:
+
+- Lokal geliştirme: `malipilot/server.py`
+- Vercel canlı ortam: `api/index.py`
+
+Yeni bir API endpoint eklendiğinde ikisi de kontrol edilmelidir. Sadece lokal çalışan bir özellik bitmiş sayılmaz.
+
 ## Test
 
 ```bash
 python3 -m unittest discover -s tests
 ```
+
+Fonksiyonel değişikliklerde temel kontrol:
+
+```bash
+python3 -m unittest discover -s tests
+python3 -m compileall malipilot api tests
+node --check static/app.js
+```
+
+Canlı API değişikliklerinde push sonrası Vercel endpoint'i ayrıca `curl` ile kontrol edilmelidir.
 
 ## ChatGPT ile Belge Okuma
 
@@ -74,6 +93,20 @@ Supabase şeması `supabase_schema.sql` dosyasındadır. Bu değişkenler yoksa 
 - `Fişler`: PDF veya görsel dosyalar.
 - `Kontrol`: eksik, düşük güvenli veya şüpheli kayıtları ayrı gösterme.
 - `Çıktı`: tablo dosyası üretme.
+- `Silme`: tek satırları veya yüklemeyi bağlı kayıtlarıyla silme.
+
+## Güvenilirlik Kuralı
+
+Kullanıcı hiçbir işlemden sonra tahmin etmek zorunda kalmamalıdır:
+
+- Ne işlendi?
+- Ne başarısız oldu?
+- Ne kontrol bekliyor?
+- Ne silindi?
+- Ne silinemedi?
+- Ne dışa aktarıldı?
+
+Bu yüzden yükleme, kontrol, silme ve çıktı işlemleri görünür başarı veya hata mesajı üretmelidir. Ayrıntılı manuel kontrol listesi `QA_CHECKLIST.md` dosyasındadır.
 
 ## Pilot Sınırları
 

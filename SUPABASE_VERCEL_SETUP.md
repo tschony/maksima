@@ -40,6 +40,7 @@ Die Tabellen sind:
 - `receipts`
 - `account_code_rules`
 - `feedback`
+- `extraction_runs`
 
 ## Vercel Environment Variables
 
@@ -82,6 +83,45 @@ Dann echte Werte in `.env.local` eintragen und Server neu starten:
 python3 -m malipilot.server
 ```
 
+## Löschregeln
+
+Beim Löschen muss Supabase genauso geprüft werden wie SQLite.
+
+Ein einzelner extrahierter Datensatz löscht:
+
+- passenden Eintrag in `bank_transactions`, `z_reports` oder `receipts`
+- zugehörige `feedback`-Einträge
+- nicht das ursprüngliche Dokument
+
+Eine komplette yükleme unter `Yüklemeler` löscht:
+
+- `documents`
+- alle verbundenen `bank_transactions`
+- alle verbundenen `z_reports`
+- alle verbundenen `receipts`
+- alle verbundenen `feedback`-Einträge
+- alle verbundenen `extraction_runs`
+- das Storage-Objekt im Bucket `documents`, soweit Supabase Storage es erlaubt
+
+Wichtig: Ein DELETE gilt nur als erfolgreich, wenn die wichtigen Tabellen tatsächlich gelöschte Zeilen zurückgeben oder danach verifiziert wird, dass der Datensatz weg ist. Ein bloßer HTTP-Request reicht nicht als Erfolg.
+
+## Vercel-Routen
+
+Lokale Routen in `malipilot/server.py` reichen nicht. Vercel nutzt `api/index.py`.
+
+Diese produktkritischen Routen müssen in beiden Einstiegspunkten vorhanden sein:
+
+- `/api/state`
+- `/api/clients`
+- `/api/upload`
+- `/api/upload-url`
+- `/api/process-stored-upload`
+- `/api/review-item`
+- `/api/delete-item`
+- `/api/delete-document`
+- `/api/export`
+- `/api/document`
+
 ## Erledigt, wenn
 
 - `/api/state` zeigt `"storage": {"provider": "supabase"}`.
@@ -89,3 +129,5 @@ python3 -m malipilot.server
 - Ein hochgeladener Fiş bleibt nach Refresh erhalten.
 - Die Review Queue bleibt nach Refresh erhalten.
 - Supabase Storage enthält die hochgeladene Datei.
+- Löschen bleibt nach Refresh sichtbar gelöscht.
+- `/api/delete-item` und `/api/delete-document` liefern live türkische Validierungsfehler statt `Sayfa bulunamadı`, wenn sie ohne Payload getestet werden.
