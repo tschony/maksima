@@ -299,6 +299,16 @@ def mark_document_failed(document_id: int, warnings: list[str]) -> None:
         conn.commit()
 
 
+def update_document_module(document_id: int, module: str) -> None:
+    payload = {"module": module}
+    if using_supabase():
+        client().patch("documents", {"id": f"eq.{document_id}"}, payload)
+        return
+    with connect() as conn:
+        conn.execute("update documents set module = ? where id = ?", (module, document_id))
+        conn.commit()
+
+
 def insert_extraction_run_record(document_id: int, diagnostic: dict[str, Any]) -> None:
     payload = {
         "document_id": document_id,

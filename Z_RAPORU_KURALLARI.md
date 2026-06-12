@@ -90,7 +90,11 @@ Bir kullanıcı yanlışlıkla Z raporunu `Fiş` modülüne yüklerse uygulama b
 
 Beklenen davranış:
 
-- `bookkeeping_status`: `islenmez`
-- `needs_review`: `true`
-- `gross_total`: boş
-- Not: `Z raporu olarak görünüyor; fiş olarak işlenmemeli.`
+- Önce belge okuma notları ve OCR metni Z raporu sinyali için kontrol edilir.
+- Mümkünse belge otomatik olarak `Z raporları` bölümüne aktarılır.
+- Aktarım başarılıysa `z_reports` tablosuna Z kaydı yazılır ve yükleme kaydının modülü `z` yapılır.
+- Aktarım yapılamazsa fiş olarak güvenli şekilde reddedilir:
+  - `bookkeeping_status`: `islenmez`
+  - `needs_review`: `true`
+  - `gross_total`: boş
+  - Not: `Z raporu olarak görünüyor; fiş olarak işlenmemeli.`

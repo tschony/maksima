@@ -24,6 +24,7 @@ from malipilot.ai_extractor import (
 )
 from malipilot.ocr import extract_receipt, extract_z_report
 from malipilot.parsers import parse_bank_file, parse_decimal, read_xlsx
+from malipilot.server import has_z_report_signal, should_reroute_receipt_to_z
 
 
 class ParserTests(unittest.TestCase):
@@ -96,6 +97,18 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(item["document_no"], "674")
         self.assertEqual(item["gross_total"], "")
         self.assertIn("Z raporu", item["raw_text"])
+
+    def test_receipt_upload_with_z_note_is_rerouted_to_z(self):
+        diagnostic = {"raw_response": '{"items":[],"document_notes":"Bu belge Z GÜNLÜK RAPORU gibi görünüyor."}'}
+
+        self.assertTrue(should_reroute_receipt_to_z("receipt", [], ["ChatGPT yapılandırılmış kayıt döndürmedi"], diagnostic))
+        self.assertFalse(should_reroute_receipt_to_z("receipt", [{"gross_total": "10.00"}], [], diagnostic))
+        self.assertFalse(should_reroute_receipt_to_z("z", [], [], diagnostic))
+
+    def test_z_report_signal_accepts_turkish_and_english_notes(self):
+        self.assertTrue(has_z_report_signal("Z SAYAÇ 0674"))
+        self.assertTrue(has_z_report_signal("looks like a z report"))
+        self.assertFalse(has_z_report_signal("normal market receipt"))
 
     def test_receipt_extraction(self):
         raw = "MARKET AŞ\nTarih: 06.06.2026\nVKN 1234567890\nKDV 18,00\nTOPLAM 118,00"

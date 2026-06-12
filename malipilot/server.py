@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .ai_extractor import AI_EXTRACTION_ERRORS, ai_model, ai_provider, extract_with_ai
 from .exporters import export_filename, write_workbook
-from .ocr import extract_receipt, extract_z_report, run_ocr_pages
+from .ocr import extract_receipt, extract_z_report, is_z_report_text, run_ocr_pages
 from .parsers import parse_bank_file
 from .persistence import (
     EXPORT_DIR,
@@ -37,6 +37,7 @@ from .persistence import (
     read_document_content,
     review_needed,
     store_upload,
+    update_document_module,
     update_review_item_record,
 )
 from .storage import ROOT
@@ -323,7 +324,8 @@ def process_uploaded_file(path: Path, stored_path: str, client_id: int, period: 
             for item in result.rows:
                 insert_bank_transaction(doc_id, item)
         else:
-            ai_items, ai_warnings = [], []
+            active_module = module
+            ai_items, ai_warnings, diagnostic = [], [], {}
             try:
                 ai_items, ai_warnings, diagnostic = extract_with_ai(path, module, client_id, period, filename)
                 record_extraction_run(doc_id, diagnostic, warnings)
@@ -334,9 +336,27 @@ def process_uploaded_file(path: Path, stored_path: str, client_id: int, period: 
             except Exception as exc:
                 warnings.append(f"Belge okuma kullanılamadı: {friendly_upload_error(str(exc))}")
 
+            if should_reroute_receipt_to_z(module, ai_items, ai_warnings, diagnostic):
+                warnings.append("Fiş olarak yüklenen belge Z raporu olarak algılandı; Z raporları bölümüne aktarıldı.")
+                try:
+                    z_items, z_warnings, z_diagnostic = extract_with_ai(path, "z", client_id, period, filename)
+                    record_extraction_run(doc_id, z_diagnostic, warnings)
+                    warnings.extend(z_warnings)
+                    if z_items:
+                        update_document_module(doc_id, "z")
+                        active_module = "z"
+                        ai_items = z_items
+                    else:
+                        warnings.append("Z raporu olarak tekrar okundu ama yapılandırılmış kayıt çıkarılamadı.")
+                except AI_EXTRACTION_ERRORS as exc:
+                    record_extraction_run(doc_id, exc.diagnostic, warnings)
+                    warnings.append(f"Z raporu okuması kullanılamadı: {friendly_upload_error(str(exc))}")
+                except Exception as exc:
+                    warnings.append(f"Z raporu okuması kullanılamadı: {friendly_upload_error(str(exc))}")
+
             if ai_items:
                 for item in ai_items:
-                    insert_extracted_item(doc_id, module, item)
+                    insert_extracted_item(doc_id, active_module, item)
             else:
                 if not can_use_local_ocr_fallback():
                     reason = "; ".join(dedupe_messages(warnings)) if warnings else "Belge okuma yapılandırılmış kayıt döndürmedi"
@@ -346,16 +366,20 @@ def process_uploaded_file(path: Path, stored_path: str, client_id: int, period: 
                 ocr_pages = run_ocr_pages(path)
                 if len(ocr_pages) > 1:
                     warnings.append(f"{len(ocr_pages)} sayfa ayrı kayıt olarak işlendi")
-                if module == "z":
+                if active_module == "receipt" and any(is_z_report_text(page.get("raw_text", "")) for page in ocr_pages):
+                    update_document_module(doc_id, "z")
+                    active_module = "z"
+                    warnings.append("Fiş olarak yüklenen belge yerel OCR ile Z raporu olarak algılandı; Z raporları bölümüne aktarıldı.")
+                if active_module == "z":
                     for ocr_page in ocr_pages:
                         source_name = page_source_name(filename, "Z Raporu", ocr_page["page_number"], len(ocr_pages))
                         item = extract_z_report(ocr_page["raw_text"], client_id, period, source_name)
-                        insert_extracted_item(doc_id, module, item)
+                        insert_extracted_item(doc_id, active_module, item)
                 else:
                     for ocr_page in ocr_pages:
                         source_name = page_source_name(filename, "Fiş", ocr_page["page_number"], len(ocr_pages))
                         item = extract_receipt(ocr_page["raw_text"], client_id, period, source_name)
-                        insert_extracted_item(doc_id, module, item)
+                        insert_extracted_item(doc_id, active_module, item)
         mark_document_done(doc_id, warnings)
         return {"ok": True, "document_id": doc_id, "warnings": warnings}
     except Exception as exc:
@@ -375,6 +399,32 @@ def record_extraction_run(document_id: int, diagnostic: dict, warnings: list[str
 
 def can_use_local_ocr_fallback() -> bool:
     return not os.environ.get("VERCEL")
+
+
+def should_reroute_receipt_to_z(module: str, ai_items: list[dict], ai_warnings: list[str], diagnostic: dict) -> bool:
+    if module != "receipt" or ai_items:
+        return False
+    evidence = " ".join(
+        [
+            *[str(warning) for warning in ai_warnings],
+            str(diagnostic.get("raw_response", "")),
+            str(diagnostic.get("error_message", "")),
+        ]
+    )
+    return has_z_report_signal(evidence)
+
+
+def has_z_report_signal(text: str) -> bool:
+    normalized = (text or "").upper().replace("İ", "I").replace("Ü", "U").replace("Ç", "C")
+    signals = [
+        "Z GUNLUK RAPORU",
+        "Z RAPORU",
+        "Z SAYAC",
+        "Z NO",
+        "Z-RAPOR",
+        "Z REPORT",
+    ]
+    return any(signal in normalized for signal in signals)
 
 
 def friendly_upload_error(message: str) -> str:

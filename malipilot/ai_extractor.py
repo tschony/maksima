@@ -123,10 +123,14 @@ def extract_with_openai(path: Path, module: str, client_id: int, period: str, fi
     items = result.get("items") if isinstance(result, dict) else None
     diagnostic["raw_response"] = truncate_json(result)
     diagnostic["duration_ms"] = elapsed_ms(started)
+    notes = result.get("document_notes") if isinstance(result, dict) else ""
     if not isinstance(items, list) or not items:
         diagnostic["status"] = "failed"
         diagnostic["error_message"] = "ChatGPT yapılandırılmış kayıt döndürmedi"
-        return [], ["ChatGPT yapılandırılmış kayıt döndürmedi"], diagnostic
+        warnings = ["ChatGPT yapılandırılmış kayıt döndürmedi"]
+        if notes:
+            warnings.append(str(notes)[:300])
+        return [], warnings, diagnostic
 
     normalized = []
     for index, item in enumerate(items, start=1):
@@ -140,7 +144,6 @@ def extract_with_openai(path: Path, module: str, client_id: int, period: str, fi
     diagnostic["status"] = "ok"
     diagnostic["item_count"] = len(normalized)
     warnings = [f"ChatGPT {openai_model()} ile işlendi"]
-    notes = result.get("document_notes") if isinstance(result, dict) else ""
     if notes:
         warnings.append(str(notes)[:300])
     return normalized, warnings, diagnostic
