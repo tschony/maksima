@@ -13,6 +13,8 @@ from malipilot.server import (
     create_client,
     create_feedback,
     create_rule,
+    delete_document,
+    delete_item,
     get_review_item,
     handle_stored_upload,
     handle_upload,
@@ -76,6 +78,10 @@ def handle_post(path: str, payload: dict):
         return json_payload(create_feedback(payload))
     if path == "/api/review-item":
         return json_payload(update_review_item(payload))
+    if path == "/api/delete-item":
+        return json_payload(delete_item(payload))
+    if path == "/api/delete-document":
+        return json_payload(delete_document(payload))
     return json_payload({"error": "Sayfa bulunamadı"}, HTTPStatus.NOT_FOUND)
 
 

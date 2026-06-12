@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from http import HTTPStatus
 from pathlib import Path
 
 from malipilot.exporters import write_workbook
@@ -420,6 +421,41 @@ class DeleteTests(unittest.TestCase):
         self.assertIsNone(get_document_record(doc_id, 1))
         self.assertFalse(file_path.exists())
         self.assertEqual(result["deleted"], "document")
+
+    def test_vercel_delete_item_route_removes_record(self):
+        from api.index import handle_post
+
+        doc_id = insert_document_record(1, "2026-06", "receipt", "fis.pdf", str(Path(self.tmp.name) / "fis.pdf"), "done")
+        insert_extracted_item_record("receipt", doc_id, receipt_item(doc_id=doc_id))
+        with storage.connect() as conn:
+            item_id = conn.execute("select id from receipts").fetchone()[0]
+
+        status, _, body = handle_post("/api/delete-item", {"client_id": 1, "item_type": "receipt", "id": item_id})
+        payload = json.loads(body.decode("utf-8"))
+
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertTrue(payload["ok"])
+        with storage.connect() as conn:
+            self.assertEqual(conn.execute("select count(*) from receipts").fetchone()[0], 0)
+            self.assertEqual(conn.execute("select count(*) from documents").fetchone()[0], 1)
+
+    def test_vercel_delete_document_route_removes_document_and_items(self):
+        from api.index import handle_post
+
+        file_path = Path(self.tmp.name) / "z-route.jpg"
+        file_path.write_bytes(b"test")
+        doc_id = insert_document_record(1, "2026-06", "z", "z-route.jpg", str(file_path), "done")
+        insert_extracted_item_record("z", doc_id, z_item(doc_id=doc_id))
+
+        status, _, body = handle_post("/api/delete-document", {"client_id": 1, "document_id": doc_id})
+        payload = json.loads(body.decode("utf-8"))
+
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertTrue(payload["ok"])
+        with storage.connect() as conn:
+            self.assertEqual(conn.execute("select count(*) from documents").fetchone()[0], 0)
+            self.assertEqual(conn.execute("select count(*) from z_reports").fetchone()[0], 0)
+        self.assertFalse(file_path.exists())
 
 
 def receipt_item(doc_id: int = 1) -> dict:

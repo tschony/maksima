@@ -53,8 +53,9 @@ class SupabaseRest:
         result = self.request_json("PATCH", f"/rest/v1/{table}", params=filters, payload=payload, prefer="return=representation")
         return result[0] if result else None
 
-    def delete(self, table: str, filters: dict[str, Any]) -> None:
-        self.request("DELETE", f"/rest/v1/{table}", params=filters).read()
+    def delete(self, table: str, filters: dict[str, Any]) -> list[dict[str, Any]]:
+        result = self.request_json("DELETE", f"/rest/v1/{table}", params=filters, prefer="return=representation")
+        return result if isinstance(result, list) else []
 
     def count(self, table: str) -> int:
         request = self.request("GET", f"/rest/v1/{table}", params={"select": "id"}, headers={"Prefer": "count=exact", "Range": "0-0"})
@@ -103,7 +104,8 @@ class SupabaseRest:
         return response.read()
 
     def delete_object(self, object_path: str) -> None:
-        self.request_json("POST", f"/storage/v1/object/{SUPABASE_BUCKET}/remove", payload={"prefixes": [object_path]})
+        quoted_path = "/".join(urllib.parse.quote(part) for part in object_path.split("/"))
+        self.request("DELETE", f"/storage/v1/object/{SUPABASE_BUCKET}/{quoted_path}").read()
 
     def request_json(
         self,
@@ -197,7 +199,9 @@ def delete_document_record(document_id: int, client_id: int) -> dict[str, Any]:
                 supabase.delete("feedback", {"item_type": f"eq.{item_type}", "item_id": f"eq.{item_id}"})
         for table_name in ("bank_transactions", "z_reports", "receipts", "extraction_runs"):
             supabase.delete(table_name, {"document_id": f"eq.{document_id}"})
-        supabase.delete("documents", {"id": f"eq.{document_id}", "client_id": f"eq.{client_id}"})
+        deleted_documents = supabase.delete("documents", {"id": f"eq.{document_id}", "client_id": f"eq.{client_id}"})
+        if not deleted_documents:
+            raise RuntimeError("Belge Supabase üzerinde silinemedi")
     else:
         with connect() as conn:
             for item_type, item_ids in related.items():
@@ -219,7 +223,9 @@ def delete_extracted_item_record(item_type: str, item_id: int, client_id: int) -
         if not item:
             raise ValueError("Kayıt bulunamadı")
         supabase.delete("feedback", {"item_type": f"eq.{item_type}", "item_id": f"eq.{item_id}"})
-        supabase.delete(table_name, {"id": f"eq.{item_id}", "client_id": f"eq.{client_id}"})
+        deleted_items = supabase.delete(table_name, {"id": f"eq.{item_id}", "client_id": f"eq.{client_id}"})
+        if not deleted_items:
+            raise RuntimeError("Kayıt Supabase üzerinde silinemedi")
     else:
         with connect() as conn:
             item = row(conn, f"select * from {table_name} where id = ? and client_id = ?", (item_id, client_id))
