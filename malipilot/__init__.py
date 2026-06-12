@@ -1,0 +1,2 @@
+"""MaliPilot local pilot application."""
+

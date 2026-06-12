@@ -1,0 +1,81 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+from malipilot.exporters import write_workbook
+from malipilot.ocr import extract_receipt, extract_z_report
+from malipilot.parsers import parse_bank_file, parse_decimal, read_xlsx
+
+
+class ParserTests(unittest.TestCase):
+    def test_parse_turkish_decimal(self):
+        self.assertEqual(str(parse_decimal("1.234,56 TL")), "1234.56")
+        self.assertEqual(str(parse_decimal("-45,10")), "-45.10")
+
+    def test_bank_csv_normalization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bank.csv"
+            path.write_text(
+                "Tarih;Açıklama;Borç;Alacak;Bakiye\n"
+                "01.06.2026;SGK ODEME;1.250,00;;8.750,00\n"
+                "02.06.2026;MUSTERI TAHSILAT;;2.000,00;10.750,00\n",
+                encoding="utf-8",
+            )
+            result = parse_bank_file(path, client_id=1, period="2026-06", bank_name="TestBank", rules=[])
+            self.assertEqual(len(result.rows), 2)
+            self.assertEqual(result.rows[0]["date"], "2026-06-01")
+            self.assertEqual(result.rows[0]["debit"], "1250.00")
+            self.assertEqual(result.rows[0]["suggested_account_code"], "361")
+
+    def test_z_report_extraction(self):
+        raw = "BEKO Z NO: 12345 Tarih 05.06.2026 KDV %20 120,00 GENEL TOPLAM 720,00 NAKIT 200,00 KREDI 520,00"
+        item = extract_z_report(raw, client_id=1, period="2026-06", source_file="z.jpg")
+        self.assertEqual(item["report_date"], "2026-06-05")
+        self.assertEqual(item["z_no"], "12345")
+        self.assertEqual(item["gross_total"], "720.00")
+
+    def test_z_report_extraction_when_ocr_drops_commas(self):
+        raw = "BEKO\nTarih 05062026\nKDV%20 12000\nGENEL TOPLAM 72000\nNAKIT20000 KREDI 520.00"
+        item = extract_z_report(raw, client_id=1, period="2026-06", source_file="z.jpg")
+        self.assertEqual(item["report_date"], "2026-06-05")
+        self.assertEqual(item["gross_total"], "720.00")
+
+    def test_receipt_extraction(self):
+        raw = "MARKET AŞ\nTarih: 06.06.2026\nVKN 1234567890\nKDV 18,00\nTOPLAM 118,00"
+        item = extract_receipt(raw, client_id=1, period="2026-06", source_file="fis.jpg")
+        self.assertEqual(item["receipt_date"], "2026-06-06")
+        self.assertEqual(item["vkn_tckn"], "1234567890")
+        self.assertEqual(item["bookkeeping_status"], "uygun")
+
+    def test_receipt_extraction_from_iphone_scan_ocr(self):
+        raw = (
+            "E-ARŞİV FATURA\n"
+            "A101 YENI MAGAZACILIK A.\n"
+            "USKUDAR/9480423762\n"
+            "Tarih: 10/05/2026 Saat : 19:50\n"
+            "Belge No: 737400210608050171\n"
+            "MAL/HIZMET TOPLAM TUTARI * 237.62\n"
+            "TOPKDV * 2.38\n"
+            "ÖDENECEK TUTAR * 240.00\n"
+            "KREDI KARTI *240.00\n"
+        )
+        item = extract_receipt(raw, client_id=1, period="2026-06", source_file="Fiş 01 - scan.pdf")
+        self.assertEqual(item["receipt_date"], "2026-05-10")
+        self.assertEqual(item["merchant_name"], "A101 YENI MAGAZACILIK A.")
+        self.assertEqual(item["vkn_tckn"], "9480423762")
+        self.assertEqual(item["document_no"], "737400210608050171")
+        self.assertEqual(item["gross_total"], "240.00")
+        self.assertEqual(item["vat_total"], "2.38")
+        self.assertEqual(item["payment_method"], "kart")
+        self.assertTrue(item["needs_review"])
+
+    def test_xlsx_roundtrip_for_simple_export(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "out.xlsx"
+            write_workbook(path, {"Sheet1": [{"Tarih": "01.06.2026", "Açıklama": "Test", "Tutar": "10,00"}]})
+            rows = read_xlsx(path)
+            self.assertEqual(rows[0]["Açıklama"], "Test")
+
+
+if __name__ == "__main__":
+    unittest.main()

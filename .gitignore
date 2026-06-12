@@ -1,0 +1,18 @@
+data/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Local/private runtime files
+.env
+.env.*
+*.sqlite3
+*.db
+*.log
+
+# Private pilot material and source documents
+*.pdf
+Ali-*.md
+ALI_*.md
+MALI_MUSAVIR_MASTER_ROADMAP.md
+MASTER_PLAN.md

@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MaliYardımcı</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <nav class="topline" aria-label="Ana navigasyon">
+        <div class="brand-mark">
+          <span class="brand-symbol">MP</span>
+          <div>
+            <strong>MaliYardımcı</strong>
+            <small>Dijital mali müşavir yardımcısı</small>
+          </div>
+        </div>
+        <div class="top-actions">
+          <button type="button" class="ghost nav-shortcut" data-view="upload">Dosya işle</button>
+          <button type="button" class="ghost nav-shortcut" data-view="review">Kontrol</button>
+          <button type="button" id="refresh" class="ghost">Yenile</button>
+        </div>
+      </nav>
+
+      <section class="hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow">Mali müşavirler için dijital eleman</p>
+          <h1>Banka, Z raporu ve fiş kontrolünü tek akışta hazırlayan deneme sistemi.</h1>
+          <p class="hero-text">
+            Luca şifresi istemeden, banka bağlantısı kurmadan ve nihai muhasebe kararı vermeden
+            veriyi okunabilir, kontrol edilebilir ve tablo dosyasına aktarılabilir hale getirir.
+          </p>
+          <div class="hero-cta">
+            <button type="button" class="primary nav-shortcut" data-view="upload">İlk dosyayı yükle</button>
+            <button type="button" class="secondary nav-shortcut" data-view="dashboard">Deneme durumunu gör</button>
+          </div>
+        </div>
+
+        <aside class="hero-ledger" aria-label="Deneme özeti">
+          <div class="ledger-head">
+            <span>Hazırlık Durumu</span>
+            <strong id="hero-period">2026-06</strong>
+          </div>
+          <div id="counts" class="counts"></div>
+          <div class="ledger-note">
+            <span class="dot"></span>
+            Önce anonim örnek veri, sonra Ali ile gerçek zaman ölçümü.
+          </div>
+        </aside>
+      </section>
+    </header>
+
+    <main class="workspace">
+      <section class="workflow" aria-label="Çalışma akışı">
+        <button type="button" class="workflow-step active" data-view="dashboard">
+          <span>01</span>
+          <strong>Genel durum</strong>
+          <small>Mükellef ve deneme durumu</small>
+        </button>
+        <button type="button" class="workflow-step" data-view="upload">
+          <span>02</span>
+          <strong>Dosya yükleme</strong>
+          <small>Banka, Z raporu, fiş</small>
+        </button>
+        <button type="button" class="workflow-step" data-view="review">
+          <span>03</span>
+          <strong>Kontrol</strong>
+          <small>Kontrol gerekenler</small>
+        </button>
+        <button type="button" class="workflow-step" data-view="export">
+          <span>04</span>
+          <strong>Çıktı</strong>
+          <small>Tablo dosyası</small>
+        </button>
+        <button type="button" class="workflow-step" data-view="rules">
+          <span>05</span>
+          <strong>Kurallar</strong>
+          <small>Hesap kodu öğrenimi</small>
+        </button>
+      </section>
+
+      <section id="view-dashboard" class="view active">
+        <div class="view-head">
+          <div>
+            <p class="eyebrow">Başlangıç</p>
+            <h2>Deneme kontrol merkezi</h2>
+          </div>
+          <p>Ali’ye gösterilecek ilk ekran: kim için, hangi dönem, ne kadar veri işlendi.</p>
+        </div>
+
+        <div class="dashboard-grid">
+          <form id="client-form" class="panel stack">
+            <div class="panel-title">
+              <span>Mükellef</span>
+              <strong>Yeni dosya sahibi</strong>
+            </div>
+            <label>
+              Mükellef adı
+              <input name="name" placeholder="Örnek Firma A" required />
+            </label>
+            <label>
+              Kısa ad
+              <input name="alias" placeholder="Ali Deneme 1" />
+            </label>
+            <button type="submit">Mükellef Ekle</button>
+          </form>
+
+          <div class="panel status-panel">
+            <div class="panel-title">
+              <span>Akış</span>
+              <strong>Bugünkü durum</strong>
+            </div>
+            <div class="status-list">
+              <div>
+                <b>1</b>
+                <p>Mükellef oluştur</p>
+              </div>
+              <div>
+                <b>2</b>
+                <p>Anonim dosyaları yükle</p>
+              </div>
+              <div>
+                <b>3</b>
+                <p>Kontrol kuyruğunu temizle</p>
+              </div>
+              <div>
+                <b>4</b>
+                <p>Tablo dosyasını Ali’ye gönder</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel client-panel">
+            <div class="panel-title">
+              <span>Mükellefler</span>
+              <strong>Kayıtlı deneme listesi</strong>
+            </div>
+            <div id="client-list" class="mini-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-upload" class="view">
+        <div class="view-head">
+          <div>
+            <p class="eyebrow">Dosya işleme</p>
+            <h2>Veriyi muhasebeye hazır hale getir</h2>
+          </div>
+          <p>Önce güvenli deneme: sadece anonim dosya, insan kontrolü, tablo çıktısı.</p>
+        </div>
+
+        <form id="upload-form" class="panel upload-card">
+          <div class="module-picker" role="group" aria-label="Modül seçimi">
+            <label class="module-option active">
+              <input type="radio" name="module_radio" value="bank" checked />
+              <span>Banka</span>
+              <small>Hareket dosyaları</small>
+            </label>
+            <label class="module-option">
+              <input type="radio" name="module_radio" value="z" />
+              <span>Z Raporu</span>
+              <small>Kasa gün sonu</small>
+            </label>
+            <label class="module-option">
+              <input type="radio" name="module_radio" value="receipt" />
+              <span>Fiş</span>
+              <small>Gider belgesi</small>
+            </label>
+          </div>
+
+          <input type="hidden" name="module" value="bank" />
+
+          <div class="upload-grid">
+            <label>
+              Mükellef
+              <select name="client_id" required></select>
+            </label>
+            <label>
+              Dönem
+              <input name="period" value="2026-06" placeholder="Yıl-Ay" required />
+            </label>
+            <label>
+              Banka adı
+              <input name="bank_name" placeholder="Akbank, Garanti..." />
+            </label>
+            <label class="file-field">
+              Dosya
+              <input id="upload-file" name="file" type="file" required />
+              <span id="file-display" class="file-display">Henüz dosya seçilmedi</span>
+            </label>
+          </div>
+
+          <div class="upload-footer">
+            <p id="upload-helper">Banka hareketi dosyasını yükle. Satırlar silinmez, belirsiz alanlar kontrole düşer.</p>
+            <button type="submit" class="primary">Dosyayı İşle</button>
+          </div>
+        </form>
+
+        <div id="message" class="message" hidden></div>
+      </section>
+
+      <section id="view-review" class="view">
+        <div class="view-head">
+          <div>
+            <p class="eyebrow">Kontrol</p>
+            <h2>Ali’nin bakması gereken satırlar</h2>
+          </div>
+          <p>Güven düşükse, alan eksikse veya duplikasyon varsa satır burada kalır.</p>
+        </div>
+        <div class="review-grid">
+          <div class="panel">
+            <div class="panel-title">
+              <span>Kuyruk</span>
+              <strong>Kontrol bekleyen işler</strong>
+            </div>
+            <div id="review-table" class="table-wrap"></div>
+          </div>
+          <aside id="review-detail" class="panel review-detail" aria-live="polite">
+            <div class="empty-state">Kontrol için bir satır seç.</div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="view-export" class="view">
+        <div class="view-head">
+          <div>
+            <p class="eyebrow">Çıktı</p>
+            <h2>Tablo dosyasını hazırla</h2>
+          </div>
+          <p>Banka, Z raporu, fiş ve kontrol satırlarını ayrı sayfalar halinde dışa aktar.</p>
+        </div>
+
+        <div class="panel export-panel">
+          <div class="export-controls">
+            <label>
+              Mükellef
+              <select name="client_id" id="export-client" required></select>
+            </label>
+            <label>
+              Dönem
+              <input id="export-period" value="2026-06" placeholder="Yıl-Ay" />
+            </label>
+            <button id="export" type="button" class="primary">Tablo dosyasını indir</button>
+          </div>
+          <div class="export-card">
+            <span class="sheet">Banka hareketleri</span>
+            <span class="sheet">Z raporları</span>
+            <span class="sheet">Fişler</span>
+            <span class="sheet">Kontrol gerekenler</span>
+            <span class="sheet">Öğrenilen kurallar</span>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-rules" class="view">
+        <div class="view-head">
+          <div>
+            <p class="eyebrow">Öğrenen sistem</p>
+            <h2>Hesap kodu kuralları</h2>
+          </div>
+          <p>Ali’nin düzelttiği tekrar eden açıklamalar sonraki ay otomatik öneriye dönüşür.</p>
+        </div>
+
+        <form id="rule-form" class="panel rule-grid">
+          <label>
+            Mükellef
+            <select name="client_id"></select>
+          </label>
+          <label>
+            Açıklama / IBAN / Karşı taraf paterni
+            <input name="pattern" placeholder="SGK, kira, tedarikçi adı..." required />
+          </label>
+          <label>
+            Hesap kodu
+            <input name="account_code" placeholder="770, 360..." required />
+          </label>
+          <button type="submit">Kural Kaydet</button>
+        </form>
+      </section>
+
+      <section class="data-section">
+        <div class="tabs">
+          <button class="tab active" data-tab="bank">Banka</button>
+          <button class="tab" data-tab="z">Z Raporları</button>
+          <button class="tab" data-tab="receipt">Fişler</button>
+          <button class="tab" data-tab="docs">Son yüklenenler</button>
+        </div>
+        <div id="data-table" class="table-wrap"></div>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
