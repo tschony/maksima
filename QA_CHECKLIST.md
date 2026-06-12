@@ -2,6 +2,33 @@
 
 Use this checklist before saying a workflow is fixed.
 
+## Feature Pre-Mortem
+
+Before building a feature, answer these briefly:
+
+- Which real Ali problem does it solve?
+- What hidden edge cases are likely?
+- What must never happen?
+- Which module can be misclassified?
+- Which rows, files, feedback, extraction runs, rules, exports, and storage objects are affected?
+- How does the user see success, uncertainty, partial failure, and failure?
+- What must be tested locally?
+- What must be tested on Vercel?
+- Which regression test or document update is required?
+
+## P0 Stop Gate
+
+Stop feature work and fix first if any of these are present:
+
+- data loss
+- wrong amounts treated as safe
+- wrong `Mükellef` data shown or exported
+- delete silently fails or deletes the wrong thing
+- Z raporu stored as normal `Fiş`
+- `KÜM TOP` or `KÜM KDV` stored as daily amount
+- private documents committed to GitHub
+- service keys exposed to frontend or repo
+
 ## Smoke Test
 
 - Open the app.

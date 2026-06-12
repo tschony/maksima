@@ -4,6 +4,16 @@ Mali müşavir büroları için yerel pilot uygulama. Banka hareketlerini, Z rap
 
 Bu proje ilk aşamada yerel çalışır. Banka bağlantısı kurmaz, Luca şifresi istemez ve nihai muhasebe kararını otomatik vermez.
 
+## Engineering Persona
+
+Bu proje için çalışma modu `PROGRAMMIERER_PERSONA_MALIPILOT.md` dosyasında tanımlıdır.
+
+Kısa kural:
+
+> Sadece fonksiyon yazma. Fonksiyonun arkasındaki riski kapat.
+
+Geliştirici bu projede sadece kod yazmaz; ürün, QA, güvenlik, veri güvenilirliği, domain araştırması ve deployment gerçekliğini birlikte düşünür. Her kritik değişiklikte gerçek akış kontrol edilir: UI -> API -> Vercel -> Supabase/SQLite -> Storage -> Review -> Export -> Refresh.
+
 ## Çalıştırma
 
 ```bash

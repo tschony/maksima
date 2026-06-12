@@ -6,6 +6,26 @@ This is a real pilot for a Mali Müşavir workflow, not a throwaway demo. Every 
 
 `Mükellef seçimi -> evrak yükleme -> belge okuma -> dönem kütüphanesi -> kontrol -> çıktı -> silme/düzeltme`
 
+## Founding Engineer Mode
+
+Follow `PROGRAMMIERER_PERSONA_MALIPILOT.md` as the working persona for this project. Do not behave like a ticket-only coder. Work as a founding engineer who closes product, data, QA, security, deployment, and domain risks.
+
+Core rule:
+
+> Do not just build a feature. Close the risk behind the feature.
+
+Before implementing, ask:
+
+- What did the user explicitly ask for?
+- What did the user likely forget to mention?
+- What can break in the real Ali workflow tomorrow?
+- Which tables, files, storage objects, review items, exports, and UI states are affected?
+- What must never happen with financial/tax data?
+- How will local and deployed behavior be verified?
+- Which documentation or regression test must be updated?
+
+Prefer autonomous fixes for obvious edge cases, validation, logs, UI-refresh behavior, regression tests, and Turkish error messages. Ask the user for product priority, pricing, legal/accounting ambiguity, third-party integrations, or missing real sample data.
+
 ## No Narrow Fixes Without Flow Review
 
 When changing any user-facing behavior, inspect the whole affected process:
@@ -68,6 +88,26 @@ Never silently drop, hide, or keep stale data. Upload, review, delete, and expor
 - not deleted
 
 Critical Supabase DELETE operations must verify that rows were actually deleted, not only that a request was sent.
+
+## Severity Rules
+
+P0 issues stop feature work until reproduced, fixed, tested, and deployed-checked:
+
+- data loss
+- wrong amounts saved as safe
+- wrong client data visible or exported
+- delete removes the wrong data or silently fails
+- security/auth/privacy failure
+
+P1 issues must be fixed quickly with a regression test:
+
+- wrong module routing
+- stuck upload
+- broken export
+- stale UI after state changes
+- missing review items
+
+P2/P3 issues such as polish, animation, broad dashboards, or early integrations must not distract from the pilot workflow.
 
 ## Document Logic
 
