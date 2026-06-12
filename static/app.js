@@ -591,10 +591,10 @@ function bindLibraryActions() {
     button.addEventListener("click", () => switchView("review"));
   });
   $$(".library-item-delete").forEach((button) => {
-    button.addEventListener("click", () => deleteLibraryItem(button.dataset.itemType, button.dataset.id));
+    button.addEventListener("click", () => deleteLibraryItem(button.dataset.itemType, button.dataset.id, button));
   });
   $$(".document-delete").forEach((button) => {
-    button.addEventListener("click", () => deleteDocument(button.dataset.documentId));
+    button.addEventListener("click", () => deleteDocument(button.dataset.documentId, button));
   });
 }
 
@@ -604,31 +604,45 @@ function openDocument(documentId) {
   window.open(`/api/document?document_id=${encodeURIComponent(documentId)}&client_id=${encodeURIComponent(client.id)}`, "_blank", "noopener");
 }
 
-async function deleteLibraryItem(itemType, itemId) {
+async function deleteLibraryItem(itemType, itemId, button = null) {
   const client = selectedClient();
   if (!client || !itemType || !itemId) return;
   const label = TYPE_LABELS[itemType] || "Kayıt";
   if (!window.confirm(`${label} kaydı silinsin mi? Bu işlem geri alınamaz.`)) return;
-  await api("/api/delete-item", {
-    method: "POST",
-    body: JSON.stringify({ client_id: client.id, item_type: itemType, id: itemId }),
-  });
-  showMessage("Kayıt silindi.");
-  await refresh();
-  renderDataTable();
+  if (button) button.disabled = true;
+  try {
+    await api("/api/delete-item", {
+      method: "POST",
+      body: JSON.stringify({ client_id: client.id, item_type: itemType, id: itemId }),
+    });
+    showMessage("Kayıt silindi.");
+    await refresh();
+    renderDataTable();
+  } catch (error) {
+    showMessage(`Kayıt silinemedi: ${error.message}`);
+  } finally {
+    if (button?.isConnected) button.disabled = false;
+  }
 }
 
-async function deleteDocument(documentId) {
+async function deleteDocument(documentId, button = null) {
   const client = selectedClient();
   if (!client || !documentId) return;
   if (!window.confirm("Bu yükleme ve ona bağlı bütün satırlar silinsin mi? Bu işlem geri alınamaz.")) return;
-  const result = await api("/api/delete-document", {
-    method: "POST",
-    body: JSON.stringify({ client_id: client.id, document_id: documentId }),
-  });
-  showMessage(result.storage_warning || "Belge ve bağlı kayıtlar silindi.");
-  await refresh();
-  renderDataTable();
+  if (button) button.disabled = true;
+  try {
+    const result = await api("/api/delete-document", {
+      method: "POST",
+      body: JSON.stringify({ client_id: client.id, document_id: documentId }),
+    });
+    showMessage(result.storage_warning || "Belge ve bağlı kayıtlar silindi.");
+    await refresh();
+    renderDataTable();
+  } catch (error) {
+    showMessage(`Belge silinemedi: ${error.message}`);
+  } finally {
+    if (button?.isConnected) button.disabled = false;
+  }
 }
 
 function applyLibraryFilters(rows, tabName) {
