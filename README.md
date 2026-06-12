@@ -27,8 +27,8 @@ python3 -m unittest discover -s tests
 Fiş ve Z raporu yüklemelerinde Gemini kullanmak için:
 
 ```bash
-export GEMINI_API_KEY="DEIN_KEY"
-export MALIYARDIMCI_GEMINI_MODEL="gemini-3.5-flash"
+cp .env.example .env.local
+# .env.local dosyasına gerçek Gemini key girilir
 python3 -m malipilot.server
 ```
 

@@ -35,8 +35,19 @@ Für Z raporları werden entsprechend Datum, Z no, cihaz bilgisi, toplam tutar, 
 Lokal:
 
 ```bash
-export GEMINI_API_KEY="DEIN_KEY"
-export MALIYARDIMCI_GEMINI_MODEL="gemini-3.5-flash"
+cp .env.example .env.local
+```
+
+Dann `.env.local` öffnen und den echten Key eintragen:
+
+```bash
+GEMINI_API_KEY=DEIN_ECHTER_KEY
+MALIYARDIMCI_GEMINI_MODEL=gemini-3.5-flash
+```
+
+Danach den lokalen Server neu starten:
+
+```bash
 python3 -m malipilot.server
 ```
 
@@ -49,10 +60,13 @@ Vercel:
 - Danach neu deployen.
 
 Der API-Key darf nie in GitHub, Markdown, Screenshots oder Testdateien gespeichert werden.
+`.env.local` ist durch `.gitignore` geschützt und bleibt lokal.
 
 ## Technische Dateien
 
 - `malipilot/ai_extractor.py`: Gemini REST-Aufruf, JSON-Schema, Normalisierung.
+- `.env.example`: Vorlage für lokale Gemini-Konfiguration ohne echten Key.
+- `.env.local`: lokale echte Konfiguration, wird nicht versioniert.
 - `malipilot/server.py`: Upload-Ablauf, Gemini zuerst, lokale OCR als Fallback.
 - `static/index.html`: sichtbare Anzeige, ob Gemini oder lokale OCR aktiv ist.
 - `static/app.js`: rendert den aktuellen Belge-okuma-Status.
@@ -108,4 +122,3 @@ Ein Z raporu bleibt in der Kontrolle, wenn:
 4. Pro Beleg eine Vorher/Nachher-Bewertung erfassen.
 5. Ali-Testpaket mit 20 Belegen laufen lassen.
 6. Fehlerliste aus den 20 Belegen in Parser- und Prompt-Regeln übersetzen.
-

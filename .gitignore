@@ -6,6 +6,7 @@ __pycache__/
 # Local/private runtime files
 .env
 .env.*
+!.env.example
 *.sqlite3
 *.db
 *.log
