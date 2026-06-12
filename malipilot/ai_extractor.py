@@ -366,7 +366,7 @@ def schema_for(module: str) -> dict[str, Any]:
             "document_no": {"type": "STRING"},
             "gross_total": {"type": "STRING"},
             "vat_total": {"type": "STRING"},
-            "payment_method": {"type": "STRING", "enum": ["", "nakit", "kart", "havale", "diger"]},
+            "payment_method": {"type": "STRING", "enum": ["belirsiz", "nakit", "kart", "havale", "diger"]},
             "bookkeeping_status": {"type": "STRING", "enum": ["uygun", "eksik", "okunamadi", "manuel_kontrol", "islenmez"]},
             "confidence": {"type": "NUMBER"},
             "needs_review": {"type": "BOOLEAN"},
@@ -480,6 +480,8 @@ def clean_status(value: Any) -> str:
 
 def clean_payment(value: Any) -> str:
     payment = clean_string(value)
+    if payment == "belirsiz":
+        return ""
     return payment if payment in {"", "nakit", "kart", "havale", "diger"} else "diger"
 
 

@@ -12,6 +12,7 @@ from malipilot.ai_extractor import (
     gemini_diagnostic,
     normalize_gemini_receipt,
     normalize_gemini_z_report,
+    schema_for,
     should_use_file_api,
     unwrap_gemini_file_response,
 )
@@ -120,6 +121,30 @@ class ParserTests(unittest.TestCase):
         )
         self.assertEqual(item["bookkeeping_status"], "eksik")
         self.assertTrue(item["needs_review"])
+
+    def test_gemini_receipt_schema_has_no_empty_enum_values(self):
+        schema = schema_for("receipt")
+        payment_schema = schema["properties"]["items"]["items"]["properties"]["payment_method"]
+        self.assertNotIn("", payment_schema["enum"])
+        self.assertIn("belirsiz", payment_schema["enum"])
+
+    def test_gemini_receipt_normalization_treats_unknown_payment_as_blank(self):
+        item = normalize_gemini_receipt(
+            {
+                "receipt_date": "2026-05-10",
+                "merchant_name": "A101",
+                "vkn_tckn": "9480423762",
+                "gross_total": "240.00",
+                "payment_method": "belirsiz",
+                "bookkeeping_status": "uygun",
+                "confidence": 0.91,
+                "needs_review": False,
+            },
+            client_id=1,
+            period="2026-06",
+            source_file="fis.pdf",
+        )
+        self.assertEqual(item["payment_method"], "")
 
     def test_gemini_z_report_normalization(self):
         item = normalize_gemini_z_report(
