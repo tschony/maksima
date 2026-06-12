@@ -825,6 +825,34 @@ async function fileToBase64(file) {
   return btoa(binary);
 }
 
+async function processUploadFile(file, basePayload) {
+  if (file.size > MAX_FUNCTION_UPLOAD_BYTES && state.storage?.provider !== "supabase") {
+    throw new Error(`Bu dosya ${formatFileSize(file.size)}. Büyük PDF için Supabase kayıt sistemi gerekli.`);
+  }
+  const payload = { ...basePayload, filename: file.name };
+  if (file.size > MAX_FUNCTION_UPLOAD_BYTES) {
+    const uploadTarget = await api("/api/upload-url", { method: "POST", body: JSON.stringify(payload), timeoutMs: 30000 });
+    const uploadResponse = await fetch(uploadTarget.upload_url, {
+      method: "PUT",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    });
+    if (!uploadResponse.ok) {
+      throw new Error(`Supabase yükleme başarısız oldu: HTTP ${uploadResponse.status}`);
+    }
+    return api("/api/process-stored-upload", {
+      method: "POST",
+      body: JSON.stringify({ ...payload, object_path: uploadTarget.object_path }),
+      timeoutMs: 120000,
+    });
+  }
+  return api("/api/upload", {
+    method: "POST",
+    body: JSON.stringify({ ...payload, content_base64: await fileToBase64(file) }),
+    timeoutMs: 90000,
+  });
+}
+
 $("#client-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = new FormData(event.target);
@@ -848,53 +876,46 @@ $("#upload-form").addEventListener("submit", async (event) => {
   syncContextFields();
   const submitButton = event.submitter || event.target.querySelector('button[type="submit"]');
   const form = new FormData(event.target);
-  const file = form.get("file");
-  if (!file || !file.name) {
-    showMessage("Lütfen bir dosya seç.");
+  const files = form.getAll("file").filter((file) => file && file.name);
+  if (!files.length) {
+    showMessage("Lütfen en az bir dosya seç.");
     return;
   }
-  if (file.size > MAX_FUNCTION_UPLOAD_BYTES && state.storage?.provider !== "supabase") {
-    showMessage(`Bu dosya ${formatFileSize(file.size)}. Büyük PDF için Supabase kayıt sistemi gerekli.`);
-    return;
-  }
+  const moduleName = form.get("module");
+  const bankName = form.get("bank_name");
   submitButton.disabled = true;
-  showMessage(file.size > MAX_FUNCTION_UPLOAD_BYTES ? "Büyük dosya Supabase'e yükleniyor..." : "Dosya işleniyor...");
+  $("#upload-file").disabled = true;
+  showMessage(`${files.length} dosya işleniyor...`);
   try {
     const basePayload = {
       client_id: client.id,
       period: currentPeriod(),
-      module: form.get("module"),
-      bank_name: form.get("bank_name"),
-      filename: file.name,
+      module: moduleName,
+      bank_name: bankName,
     };
-    let result;
-    if (file.size > MAX_FUNCTION_UPLOAD_BYTES) {
-      const uploadTarget = await api("/api/upload-url", { method: "POST", body: JSON.stringify(basePayload), timeoutMs: 30000 });
-      const uploadResponse = await fetch(uploadTarget.upload_url, {
-        method: "PUT",
-        headers: { "Content-Type": file.type || "application/octet-stream" },
-        body: file,
-      });
-      if (!uploadResponse.ok) {
-        throw new Error(`Supabase yükleme başarısız oldu: HTTP ${uploadResponse.status}`);
+    const results = [];
+    for (const [index, file] of files.entries()) {
+      showMessage(`${index + 1}/${files.length} işleniyor: ${file.name}`);
+      try {
+        const result = await processUploadFile(file, basePayload);
+        results.push({ file: file.name, ok: true, warnings: result.warnings || [] });
+      } catch (error) {
+        const message = error.name === "AbortError" ? "İşlem zaman aşımına uğradı." : error.message;
+        results.push({ file: file.name, ok: false, warnings: [message] });
       }
-      showMessage("Dosya yüklendi. Gemini belgeyi işliyor...");
-      result = await api("/api/process-stored-upload", {
-        method: "POST",
-        body: JSON.stringify({ ...basePayload, object_path: uploadTarget.object_path }),
-        timeoutMs: 120000,
-      });
-    } else {
-      result = await api("/api/upload", {
-        method: "POST",
-        body: JSON.stringify({ ...basePayload, content_base64: await fileToBase64(file) }),
-        timeoutMs: 90000,
-      });
     }
-    showMessage(result.warnings?.length ? `İşlendi, uyarılar: ${result.warnings.join(", ")}` : "Dosya işlendi. Kütüphane ve kontrol kuyruğu güncellendi.");
+    const okCount = results.filter((result) => result.ok).length;
+    const failed = results.filter((result) => !result.ok);
+    const warnings = results.flatMap((result) => result.warnings.map((warning) => `${result.file}: ${warning}`));
+    const summary = failed.length
+      ? `${okCount}/${files.length} dosya işlendi. Başarısız: ${failed.map((result) => result.file).join(", ")}`
+      : `${okCount} dosya işlendi. Kütüphane ve kontrol kuyruğu güncellendi.`;
+    showMessage(warnings.length ? `${summary} Uyarılar: ${warnings.join(" | ")}` : summary);
     event.target.reset();
     $("#file-display").textContent = "Henüz dosya seçilmedi";
-    switchModule("bank");
+    const selectedRadio = $(`.module-option input[value="${moduleName}"]`);
+    if (selectedRadio) selectedRadio.checked = true;
+    switchModule(moduleName);
     await refresh();
     switchView(filteredReviewItems().length ? "review" : "library");
   } catch (error) {
@@ -902,6 +923,7 @@ $("#upload-form").addEventListener("submit", async (event) => {
     showMessage(message);
   } finally {
     submitButton.disabled = false;
+    $("#upload-file").disabled = false;
   }
 });
 
