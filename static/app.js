@@ -1023,7 +1023,7 @@ function rowGrossTotal(row, tabName) {
 
 function rowVatTotal(row, tabName) {
   if (tabName === "receipt") return parseMoney(row.vat_total);
-  if (tabName === "z") return parseVatLines(row.vat_lines);
+  if (tabName === "z") return parseVatLines(row.vat_lines, row.gross_total);
   if (tabName === "docs") return relatedDocumentRows(row.id).reduce((sum, entry) => sum + rowVatTotal(entry.row, entry.tab), 0);
   return 0;
 }
@@ -1068,27 +1068,47 @@ function formatNumberTR(value) {
   return new Intl.NumberFormat("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value || 0);
 }
 
-function parseVatLines(value) {
+function parseVatLines(value, grossTotal = null) {
   if (!value) return 0;
   try {
     const parsed = JSON.parse(value);
-    return sumVatNode(parsed);
+    return sumVatNode(parsed, parseMoney(grossTotal));
   } catch {
     const matches = String(value).match(/-?\d[\d.,]*/g) || [];
-    return matches.reduce((sum, item) => sum + parseMoney(item), 0);
+    return filterVatCandidates(matches.map(parseMoney), parseMoney(grossTotal)).reduce((sum, item) => sum + item, 0);
   }
 }
 
-function sumVatNode(node) {
-  if (Array.isArray(node)) return node.reduce((sum, item) => sum + sumVatNode(item), 0);
-  if (node && typeof node === "object") {
-    return Object.entries(node).reduce((sum, [key, val]) => {
-      if (/amount|tutar|kdv|vat|tax/i.test(key)) return sum + parseMoney(val);
-      if (typeof val === "object") return sum + sumVatNode(val);
-      return sum;
-    }, 0);
+function sumVatNode(node, grossTotal = null) {
+  const candidates = [];
+  collectVatCandidates(node, candidates);
+  return filterVatCandidates(candidates, grossTotal).reduce((sum, item) => sum + item, 0);
+}
+
+function collectVatCandidates(node, candidates) {
+  if (Array.isArray(node)) {
+    node.forEach((item) => collectVatCandidates(item, candidates));
+    return;
   }
-  return 0;
+  if (node && typeof node === "object") {
+    const explicitKeys = ["kdv", "kdv_amount", "vat", "vat_amount", "tax", "tax_amount"];
+    const explicitValues = explicitKeys.filter((key) => Object.prototype.hasOwnProperty.call(node, key)).map((key) => parseMoney(node[key]));
+    if (explicitValues.length) {
+      explicitValues.forEach((amount) => candidates.push(amount));
+    } else if (Object.prototype.hasOwnProperty.call(node, "amount")) {
+      candidates.push(parseMoney(node.amount));
+    }
+    Object.values(node).forEach((val) => {
+      if (val && typeof val === "object") collectVatCandidates(val, candidates);
+    });
+  }
+}
+
+function filterVatCandidates(candidates, grossTotal) {
+  const clean = candidates.filter((amount) => Number.isFinite(amount));
+  if (!grossTotal || clean.length <= 1) return clean;
+  const filtered = clean.filter((amount) => amount === 0 || amount <= grossTotal * 0.5);
+  return filtered.length ? filtered : clean;
 }
 
 function formatMoney(value) {
@@ -1109,7 +1129,7 @@ function formatCell(col, value, row = null) {
   }
   if (col === "z_vat_total") return escapeHtml(formatMoney(row ? rowVatTotal(row, "z") : parseMoney(value)));
   if (moneyFields().has(col)) return escapeHtml(formatMoney(parseMoney(value)));
-  if (col === "vat_lines") return escapeHtml(formatMoney(parseVatLines(value)));
+  if (col === "vat_lines") return escapeHtml(formatMoney(parseVatLines(value, row?.gross_total)));
   if (col === "device_id") return escapeHtml(deviceName(value));
   if (col === "item_type" || col === "module") return escapeHtml(TYPE_LABELS[value] || value || "");
   if (col === "source_file" || col === "title" || col === "original_name") return escapeHtml(visibleDocumentTitle(value));

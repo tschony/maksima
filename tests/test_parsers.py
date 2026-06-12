@@ -34,6 +34,7 @@ from malipilot.persistence import (
     get_document_record,
     insert_document_record,
     insert_extracted_item_record,
+    vat_total_from_json,
     z_month_overview,
 )
 from malipilot.server import has_z_report_signal, should_reroute_receipt_to_z
@@ -243,6 +244,22 @@ class ParserTests(unittest.TestCase):
         self.assertIn("KÜM TOP", prompt)
         self.assertIn("kümülatif", prompt)
         self.assertIn("günlük", prompt)
+        self.assertIn("yalnızca KDV tutarını", prompt)
+
+    def test_z_vat_total_ignores_gross_total_inside_vat_lines(self):
+        vat_lines = json.dumps(
+            [
+                {"rate": "20", "amount": "10975.55"},
+                {"rate": "20", "kdv": "1829.27"},
+            ]
+        )
+
+        self.assertEqual(str(vat_total_from_json(vat_lines, "10975.55")), "1829.27")
+
+    def test_z_vat_total_prefers_explicit_kdv_key_over_amount(self):
+        vat_lines = json.dumps([{"rate": "20", "amount": "10975.55", "kdv": "1829.27"}])
+
+        self.assertEqual(str(vat_total_from_json(vat_lines, "10975.55")), "1829.27")
 
     def test_openai_image_request_uses_responses_input_image(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -560,6 +577,20 @@ class DeleteTests(unittest.TestCase):
         self.assertEqual(overview["gross_total"], "120.00")
         self.assertEqual(overview["vat_total"], "20.00")
         self.assertEqual(overview["devices"][0]["missing_days"][0], 2)
+
+    def test_z_month_overview_does_not_add_gross_to_vat(self):
+        item = z_item()
+        item["period"] = "2026-05"
+        item["report_date"] = "2026-05-02"
+        item["gross_total"] = "10975.55"
+        item["vat_lines"] = json.dumps([{"rate": "20", "amount": "10975.55"}, {"rate": "20", "kdv": "1829.27"}])
+        doc_id = insert_document_record(1, "2026-05", "z", "z.jpg", str(Path(self.tmp.name) / "z.jpg"), "done")
+        insert_extracted_item_record("z", doc_id, item)
+
+        overview = z_month_overview(1, "2026-05")
+
+        self.assertEqual(overview["gross_total"], "10975.55")
+        self.assertEqual(overview["vat_total"], "1829.27")
 
     def test_export_contains_z_month_sheets(self):
         create_client_record("TEST FIRMA", "TEST")

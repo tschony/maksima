@@ -597,6 +597,7 @@ def prompt_for(module: str) -> str:
             "Fotoğrafta aynı uzun kâğıt üzerinde birden fazla Z raporu varsa her Z raporunu ayrı kayıt olarak çıkar; "
             "arka plandaki başka kâğıtları ayrı belge gibi uydurma. Emin olmadığın alanı boş bırak. "
             "gross_total alanına yalnızca günlük satış toplamını yaz: TOP, TOPLAM, %20 TOPLAM veya Mali Veri bölümündeki günlük tutar. "
+            "vat_lines içindeki amount alanına yalnızca KDV tutarını yaz; %20 TOPLAM veya brüt satış tutarını KDV amount olarak yazma. "
             "KÜM TOP ve KÜM KDV kümülatif kasa sayaçlarıdır; bunları asla günlük gross_total veya KDV tutarı olarak yazma. "
             "Eğer günlük TOP/KDV okunamıyor ama ardışık KÜM TOP/KÜM KDV değerleri görünüyorsa sadece farktan emin olduğunda günlük değer olarak kullan. "
             "Tutarları 1234.56 formatında döndür. Tarihleri YYYY-MM-DD formatında döndür. "

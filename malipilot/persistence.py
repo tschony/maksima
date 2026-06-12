@@ -652,7 +652,7 @@ def z_validation_warnings(item: dict[str, Any], selected_period: str) -> list[st
     if not vat_lines or vat_lines in {"[]", "{}"}:
         warnings.append("KDV satırları eksik.")
     gross = decimal_or_none(gross_total)
-    vat_sum = vat_total_from_json(vat_lines)
+    vat_sum = vat_total_from_json(vat_lines, gross_total)
     if gross is not None and vat_sum is not None and vat_sum > gross:
         warnings.append("KDV toplamı satış toplamından büyük görünüyor.")
     vat_rates = vat_rates_from_json(vat_lines)
@@ -669,13 +669,46 @@ def z_validation_warnings(item: dict[str, Any], selected_period: str) -> list[st
     return unique_texts(warnings)
 
 
-def vat_total_from_json(value: str) -> Decimal | None:
+def vat_total_from_json(value: str, gross_total: Any = None) -> Decimal | None:
     try:
         parsed = json.loads(value or "[]")
     except json.JSONDecodeError:
         return None
-    total = sum_decimal_node(parsed, keys={"amount", "kdv", "vat", "tax"})
+    total = sum_vat_amounts(parsed, decimal_or_none(gross_total))
     return total if total != Decimal("0") else None
+
+
+def sum_vat_amounts(node: Any, gross_total: Decimal | None = None) -> Decimal:
+    candidates: list[Decimal] = []
+    collect_vat_amounts(node, candidates)
+    if gross_total is not None and len(candidates) > 1:
+        filtered = [amount for amount in candidates if amount == Decimal("0") or amount <= gross_total * Decimal("0.5")]
+        if filtered:
+            candidates = filtered
+    return sum(candidates, Decimal("0"))
+
+
+def collect_vat_amounts(node: Any, candidates: list[Decimal]) -> None:
+    if isinstance(node, list):
+        for item in node:
+            collect_vat_amounts(item, candidates)
+        return
+    if not isinstance(node, dict):
+        return
+
+    explicit_keys = ("kdv", "kdv_amount", "vat", "vat_amount", "tax", "tax_amount")
+    explicit_values = [decimal_or_none(node.get(key)) for key in explicit_keys if key in node]
+    explicit_values = [value for value in explicit_values if value is not None]
+    if explicit_values:
+        candidates.extend(explicit_values)
+    elif "amount" in node:
+        amount = decimal_or_none(node.get("amount"))
+        if amount is not None:
+            candidates.append(amount)
+
+    for value in node.values():
+        if isinstance(value, (dict, list)):
+            collect_vat_amounts(value, candidates)
 
 
 def vat_rates_from_json(value: str) -> set[str]:
@@ -960,7 +993,7 @@ def z_month_overview(client_id: int, period: str) -> dict[str, Any]:
         bucket = device_map[key]
         bucket["rows"].append(report)
         bucket["gross_total"] += decimal_or_none(report.get("gross_total")) or Decimal("0")
-        bucket["vat_total"] += vat_total_from_json(report.get("vat_lines") or "") or Decimal("0")
+        bucket["vat_total"] += vat_total_from_json(report.get("vat_lines") or "", report.get("gross_total")) or Decimal("0")
         if truthy(report.get("duplicate_flag")):
             bucket["duplicate_count"] += 1
         if truthy(report.get("needs_review")):
@@ -1004,7 +1037,7 @@ def z_month_overview(client_id: int, period: str) -> dict[str, Any]:
                     "count": len(day_reports),
                     "z_nos": ", ".join(clean_text(report.get("z_no")) for report in day_reports if clean_text(report.get("z_no"))),
                     "gross_total": money_text(sum((decimal_or_none(report.get("gross_total")) or Decimal("0") for report in day_reports), Decimal("0"))),
-                    "vat_total": money_text(sum((vat_total_from_json(report.get("vat_lines") or "") or Decimal("0") for report in day_reports), Decimal("0"))),
+                    "vat_total": money_text(sum((vat_total_from_json(report.get("vat_lines") or "", report.get("gross_total")) or Decimal("0") for report in day_reports), Decimal("0"))),
                 }
             )
         expected_total += days
