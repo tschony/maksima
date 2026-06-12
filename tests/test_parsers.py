@@ -74,6 +74,7 @@ class ParserTests(unittest.TestCase):
         )
         item = extract_receipt(raw, client_id=1, period="2026-06", source_file="Fiş 01 - scan.pdf")
         self.assertEqual(item["receipt_date"], "2026-05-10")
+        self.assertEqual(item["period"], "2026-05")
         self.assertEqual(item["merchant_name"], "A101 YENI MAGAZACILIK A.")
         self.assertEqual(item["vkn_tckn"], "9480423762")
         self.assertEqual(item["document_no"], "737400210608050171")
@@ -101,6 +102,7 @@ class ParserTests(unittest.TestCase):
             source_file="fis.pdf",
         )
         self.assertEqual(item["receipt_date"], "2026-05-10")
+        self.assertEqual(item["period"], "2026-05")
         self.assertEqual(item["gross_total"], "240.00")
         self.assertEqual(item["vat_total"], "2.38")
         self.assertFalse(item["needs_review"])

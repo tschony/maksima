@@ -25,6 +25,7 @@ from .persistence import (
     get_account_rules,
     get_clients,
     get_client,
+    get_document_record,
     get_review_item_record,
     insert_bank_transaction,
     insert_document_record,
@@ -33,6 +34,7 @@ from .persistence import (
     mark_document_done,
     mark_document_failed,
     materialize_stored_upload,
+    read_document_content,
     review_needed,
     store_upload,
     update_review_item_record,
@@ -62,6 +64,8 @@ class Handler(BaseHTTPRequestHandler):
             self.json_response(get_review_item(parse_qs(parsed.query)))
         elif parsed.path == "/api/export":
             self.handle_export(parse_qs(parsed.query))
+        elif parsed.path == "/api/document":
+            self.handle_document(parse_qs(parsed.query))
         else:
             self.error_json(HTTPStatus.NOT_FOUND, "Sayfa bulunamadı")
 
@@ -129,6 +133,28 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def handle_document(self, query: dict[str, list[str]]) -> None:
+        document_id = int((query.get("document_id") or ["0"])[0])
+        client_id = int((query.get("client_id") or ["0"])[0])
+        if not document_id or not client_id:
+            self.error_json(HTTPStatus.BAD_REQUEST, "Belge ve mükellef gerekli")
+            return
+        document = get_document_record(document_id, client_id)
+        if not document:
+            self.error_json(HTTPStatus.NOT_FOUND, "Belge bulunamadı")
+            return
+        try:
+            data, filename = read_document_content(document)
+        except FileNotFoundError:
+            self.error_json(HTTPStatus.NOT_FOUND, "Belge dosyası bulunamadı")
+            return
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", mimetypes.guess_type(filename)[0] or "application/octet-stream")
+        self.send_header("Content-Disposition", f'inline; filename="{filename}"')
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)

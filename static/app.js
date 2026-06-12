@@ -3,6 +3,9 @@ let activeTab = "bank";
 let activeView = "library";
 let activeReviewItem = null;
 let selectedClientId = localStorage.getItem("maliyardimci:selectedClientId") || "";
+let activeLibraryMonth = "";
+let librarySearchTerm = "";
+let libraryReviewFilter = "all";
 const MAX_FUNCTION_UPLOAD_BYTES = 3 * 1024 * 1024;
 
 const $ = (selector) => document.querySelector(selector);
@@ -136,6 +139,7 @@ function setSelectedClient(clientId, shouldScroll = true) {
     localStorage.removeItem("maliyardimci:selectedClientId");
   }
   activeReviewItem = null;
+  activeLibraryMonth = "";
   activeView = "library";
   renderClientList();
   renderSelectedClient();
@@ -401,28 +405,309 @@ async function submitReviewUpdate(event) {
 function renderDataTable() {
   const target = $("#data-table");
   if (!target || !state) return;
-  const datasets = {
-    bank: filteredRows(state.bank_rows || []),
-    z: filteredRows(state.z_reports || []),
-    receipt: filteredRows(state.receipts || []),
-    docs: filteredRows(state.recent_documents || []),
-  };
-  const preferred = {
-    bank: ["id", "period", "bank_name", "date", "description", "debit", "credit", "counterparty_guess", "suggested_account_code", "confidence", "needs_review"],
-    z: ["id", "period", "source_file", "report_date", "z_no", "gross_total", "device_brand", "confidence", "needs_review"],
-    receipt: ["id", "period", "source_file", "receipt_date", "merchant_name", "vkn_tckn", "gross_total", "bookkeeping_status", "confidence", "needs_review"],
-    docs: ["id", "period", "module", "original_name", "status", "warnings", "created_at"],
-  };
-  target.innerHTML = table(datasets[activeTab], preferred[activeTab], "Seçili dönem için kayıt yok.");
+  const baseRows = libraryRows(activeTab);
+  const monthRows = activeLibraryMonth ? baseRows.filter((row) => rowMonth(row, activeTab) === activeLibraryMonth) : baseRows;
+  const visibleRows = activeLibraryMonth ? applyLibraryFilters(monthRows, activeTab) : monthRows;
+  renderLibrarySummary(visibleRows);
+  renderLibraryControls();
+  if (!activeLibraryMonth) {
+    target.innerHTML = renderMonthFolders(baseRows);
+    bindMonthFolders();
+    return;
+  }
+  renderLibraryTitle(visibleRows.length);
+  target.innerHTML = renderLibraryDetailTable(visibleRows, activeTab);
+  bindLibraryActions();
 }
 
-function table(rows, columns, emptyText) {
-  if (!rows.length) return `<div class="empty-state">${emptyText}</div>`;
-  const head = columns.map((col) => `<th>${escapeHtml(labelFor(col))}</th>`).join("");
+function libraryRows(tabName) {
+  const datasets = {
+    bank: clientRows(state.bank_rows || []),
+    z: clientRows(state.z_reports || []),
+    receipt: clientRows(state.receipts || []),
+    docs: clientRows(state.recent_documents || []),
+  };
+  return datasets[tabName] || [];
+}
+
+function clientRows(rows) {
+  const client = selectedClient();
+  if (!client) return [];
+  const clientId = String(client.id);
+  return (rows || []).filter((row) => row.client_id === undefined || String(row.client_id) === clientId);
+}
+
+function renderLibrarySummary(rows) {
+  const target = $("#library-summary");
+  if (!target) return;
+  const summary = rows.reduce(
+    (acc, row) => {
+      acc.count += 1;
+      acc.total += rowGrossTotal(row, activeTab);
+      acc.vat += rowVatTotal(row, activeTab);
+      return acc;
+    },
+    { count: 0, total: 0, vat: 0 },
+  );
+  target.innerHTML = [
+    ["Kayıt sayısı", String(summary.count)],
+    ["Toplam tutar", formatMoney(summary.total)],
+    ["Toplam KDV", formatMoney(summary.vat)],
+  ]
+    .map(([label, value]) => `<div class="summary-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
+    .join("");
+}
+
+function renderLibraryControls() {
+  const filter = $("#library-filter");
+  const title = $("#library-title-row");
+  if (!filter || !title) return;
+  filter.hidden = !activeLibraryMonth;
+  if (!activeLibraryMonth) {
+    title.innerHTML = '<div class="folder-hint">Önce ay klasörünü seç. Kayıtlar gerçek belge tarihine göre gruplanır.</div>';
+  }
+}
+
+function renderLibraryTitle(rowCount) {
+  const target = $("#library-title-row");
+  if (!target) return;
+  target.innerHTML = `
+    <div class="library-detail-title">
+      <div>
+        <span>${escapeHtml(monthLabel(activeLibraryMonth))}</span>
+        <strong>${escapeHtml(TAB_LABELS[activeTab] || "Kayıtlar")}</strong>
+      </div>
+      <small>${escapeHtml(rowCount)} satır gösteriliyor</small>
+    </div>
+  `;
+}
+
+function renderMonthFolders(rows) {
+  const groups = groupRowsByMonth(rows, activeTab);
+  if (!groups.length) return '<div class="empty-state">Bu bölüm için kayıt yok.</div>';
+  return `
+    <div class="month-grid">
+      ${groups
+        .map(
+          (group) => `
+            <button type="button" class="month-folder" data-month="${escapeHtml(group.month)}">
+              <span>${escapeHtml(group.month)}</span>
+              <strong>${escapeHtml(monthLabel(group.month))}</strong>
+              <small>${escapeHtml(group.rows.length)} kayıt · ${escapeHtml(formatMoney(group.total))} · KDV ${escapeHtml(formatMoney(group.vat))}</small>
+            </button>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function groupRowsByMonth(rows, tabName) {
+  const groups = new Map();
+  rows.forEach((row) => {
+    const month = rowMonth(row, tabName) || "Tarihsiz";
+    if (!groups.has(month)) groups.set(month, []);
+    groups.get(month).push(row);
+  });
+  return Array.from(groups.entries())
+    .map(([month, groupRows]) => ({
+      month,
+      rows: groupRows,
+      total: groupRows.reduce((sum, row) => sum + rowGrossTotal(row, tabName), 0),
+      vat: groupRows.reduce((sum, row) => sum + rowVatTotal(row, tabName), 0),
+    }))
+    .sort((a, b) => String(b.month).localeCompare(String(a.month)));
+}
+
+function bindMonthFolders() {
+  $$(".month-folder").forEach((button) => {
+    button.addEventListener("click", () => {
+      activeLibraryMonth = button.dataset.month || "";
+      if (/^\d{4}-\d{2}$/.test(activeLibraryMonth) && $("#workspace-period")) {
+        $("#workspace-period").value = activeLibraryMonth;
+        syncContextFields();
+      }
+      renderDataTable();
+    });
+  });
+}
+
+const TAB_LABELS = {
+  bank: "Banka hareketleri",
+  z: "Z raporları",
+  receipt: "Fişler",
+  docs: "Yüklemeler",
+};
+
+const LIBRARY_COLUMNS = {
+  bank: ["date", "bank_name", "description", "debit", "credit", "suggested_account_code", "confidence", "needs_review"],
+  z: ["report_date", "source_file", "z_no", "gross_total", "vat_lines", "confidence", "needs_review"],
+  receipt: ["receipt_date", "merchant_name", "vkn_tckn", "document_no", "gross_total", "vat_total", "bookkeeping_status", "confidence", "needs_review"],
+  docs: ["period", "module", "original_name", "status", "warnings", "created_at"],
+};
+
+function renderLibraryDetailTable(rows, tabName) {
+  if (!rows.length) return '<div class="empty-state">Bu filtreye uyan kayıt yok.</div>';
+  const columns = LIBRARY_COLUMNS[tabName] || [];
+  const head = [...columns, "aksiyon"].map((col) => `<th>${escapeHtml(labelFor(col))}</th>`).join("");
   const body = rows
-    .map((row) => `<tr>${columns.map((col) => `<td>${formatCell(col, row[col])}</td>`).join("")}</tr>`)
+    .map((row) => `<tr>${columns.map((col) => `<td>${formatCell(col, row[col])}</td>`).join("")}<td>${renderLibraryActions(row, tabName)}</td></tr>`)
     .join("");
   return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function renderLibraryActions(row, tabName) {
+  const documentId = tabName === "docs" ? row.id : row.document_id;
+  const controls = [];
+  if (documentId) {
+    controls.push(`<button type="button" class="tiny-button document-open" data-document-id="${escapeHtml(documentId)}">Belgeyi aç</button>`);
+  }
+  if (tabName !== "docs") {
+    controls.push(`<button type="button" class="tiny-button library-review-open" data-item-type="${escapeHtml(tabName)}" data-id="${escapeHtml(row.id)}">Kontrol et</button>`);
+  } else if (documentNeedsReview(row.id)) {
+    controls.push('<button type="button" class="tiny-button library-review-tab">Kontrole git</button>');
+  }
+  return `<div class="row-actions">${controls.join("")}</div>`;
+}
+
+function bindLibraryActions() {
+  $$(".document-open").forEach((button) => {
+    button.addEventListener("click", () => openDocument(button.dataset.documentId));
+  });
+  $$(".library-review-open").forEach((button) => {
+    button.addEventListener("click", async () => {
+      switchView("review");
+      await openReview(button.dataset.itemType, button.dataset.id);
+    });
+  });
+  $$(".library-review-tab").forEach((button) => {
+    button.addEventListener("click", () => switchView("review"));
+  });
+}
+
+function openDocument(documentId) {
+  const client = selectedClient();
+  if (!client || !documentId) return;
+  window.open(`/api/document?document_id=${encodeURIComponent(documentId)}&client_id=${encodeURIComponent(client.id)}`, "_blank", "noopener");
+}
+
+function applyLibraryFilters(rows, tabName) {
+  const search = librarySearchTerm.trim().toLocaleLowerCase("tr-TR");
+  return rows.filter((row) => {
+    if (libraryReviewFilter === "review" && !rowNeedsReview(row, tabName)) return false;
+    if (libraryReviewFilter === "done" && rowNeedsReview(row, tabName)) return false;
+    if (!search) return true;
+    return Object.values(row).join(" ").toLocaleLowerCase("tr-TR").includes(search);
+  });
+}
+
+function rowMonth(row, tabName) {
+  if (tabName === "bank") return parseYearMonth(row.date) || parseYearMonth(row.period);
+  if (tabName === "z") return parseYearMonth(row.report_date) || parseYearMonth(row.period);
+  if (tabName === "receipt") return parseYearMonth(row.receipt_date) || parseYearMonth(row.period);
+  if (tabName === "docs") return documentMonth(row);
+  return parseYearMonth(row.period);
+}
+
+function documentMonth(documentRow) {
+  const related = relatedDocumentRows(documentRow.id);
+  const month = related.map((entry) => rowMonth(entry.row, entry.tab)).find(Boolean);
+  return month || parseYearMonth(documentRow.period) || "Tarihsiz";
+}
+
+function relatedDocumentRows(documentId) {
+  const id = String(documentId);
+  return [
+    ...clientRows(state.bank_rows || []).filter((row) => String(row.document_id) === id).map((row) => ({ tab: "bank", row })),
+    ...clientRows(state.z_reports || []).filter((row) => String(row.document_id) === id).map((row) => ({ tab: "z", row })),
+    ...clientRows(state.receipts || []).filter((row) => String(row.document_id) === id).map((row) => ({ tab: "receipt", row })),
+  ];
+}
+
+function documentNeedsReview(documentId) {
+  return relatedDocumentRows(documentId).some((entry) => rowNeedsReview(entry.row, entry.tab));
+}
+
+function rowNeedsReview(row, tabName) {
+  if (tabName === "docs") return row.status === "failed" || documentNeedsReview(row.id);
+  return Boolean(row.needs_review);
+}
+
+function rowGrossTotal(row, tabName) {
+  if (tabName === "bank") return Math.abs(parseMoney(row.debit)) + Math.abs(parseMoney(row.credit));
+  if (tabName === "z" || tabName === "receipt") return parseMoney(row.gross_total);
+  if (tabName === "docs") return relatedDocumentRows(row.id).reduce((sum, entry) => sum + rowGrossTotal(entry.row, entry.tab), 0);
+  return 0;
+}
+
+function rowVatTotal(row, tabName) {
+  if (tabName === "receipt") return parseMoney(row.vat_total);
+  if (tabName === "z") return parseVatLines(row.vat_lines);
+  if (tabName === "docs") return relatedDocumentRows(row.id).reduce((sum, entry) => sum + rowVatTotal(entry.row, entry.tab), 0);
+  return 0;
+}
+
+function parseYearMonth(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  let match = text.match(/^(\d{4})[-/.](\d{1,2})/);
+  if (match) return `${match[1]}-${match[2].padStart(2, "0")}`;
+  match = text.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+  if (match) return `${match[3]}-${match[2].padStart(2, "0")}`;
+  match = text.match(/^(\d{4})-(\d{2})$/);
+  if (match) return text;
+  return "";
+}
+
+function monthLabel(value) {
+  if (!/^\d{4}-\d{2}$/.test(value)) return value || "Tarihsiz";
+  const [year, month] = value.split("-").map(Number);
+  const date = new Date(year, month - 1, 1);
+  const label = new Intl.DateTimeFormat("tr-TR", { month: "long", year: "numeric" }).format(date);
+  return label.charAt(0).toLocaleUpperCase("tr-TR") + label.slice(1);
+}
+
+function parseMoney(value) {
+  let text = String(value ?? "").trim();
+  if (!text) return 0;
+  text = text.replace(/[^\d,.\-]/g, "");
+  if (!text || text === "-" || text === "," || text === ".") return 0;
+  const lastComma = text.lastIndexOf(",");
+  const lastDot = text.lastIndexOf(".");
+  if (lastComma > -1 && lastDot > -1) {
+    text = lastComma > lastDot ? text.replace(/\./g, "").replace(",", ".") : text.replace(/,/g, "");
+  } else if (lastComma > -1) {
+    text = text.replace(/\./g, "").replace(",", ".");
+  }
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseVatLines(value) {
+  if (!value) return 0;
+  try {
+    const parsed = JSON.parse(value);
+    return sumVatNode(parsed);
+  } catch {
+    const matches = String(value).match(/-?\d[\d.,]*/g) || [];
+    return matches.reduce((sum, item) => sum + parseMoney(item), 0);
+  }
+}
+
+function sumVatNode(node) {
+  if (Array.isArray(node)) return node.reduce((sum, item) => sum + sumVatNode(item), 0);
+  if (node && typeof node === "object") {
+    return Object.entries(node).reduce((sum, [key, val]) => {
+      if (/amount|tutar|kdv|vat|tax/i.test(key)) return sum + parseMoney(val);
+      if (typeof val === "object") return sum + sumVatNode(val);
+      return sum;
+    }, 0);
+  }
+  return 0;
+}
+
+function formatMoney(value) {
+  return `${new Intl.NumberFormat("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value || 0)} ₺`;
 }
 
 function formatCell(col, value) {
@@ -669,6 +954,25 @@ $("#upload-file").addEventListener("change", (event) => {
   $("#file-display").textContent = count ? `${count} dosya seçildi` : "Henüz dosya seçilmedi";
 });
 
+$("#library-search").addEventListener("input", (event) => {
+  librarySearchTerm = event.target.value || "";
+  renderDataTable();
+});
+
+$("#library-review-filter").addEventListener("change", (event) => {
+  libraryReviewFilter = event.target.value || "all";
+  renderDataTable();
+});
+
+$("#library-back").addEventListener("click", () => {
+  activeLibraryMonth = "";
+  librarySearchTerm = "";
+  libraryReviewFilter = "all";
+  $("#library-search").value = "";
+  $("#library-review-filter").value = "all";
+  renderDataTable();
+});
+
 $$(".workspace-tab").forEach((button) => {
   button.addEventListener("click", () => switchView(button.dataset.view));
 });
@@ -682,6 +986,11 @@ $$(".tab").forEach((button) => {
     $$(".tab").forEach((tab) => tab.classList.remove("active"));
     button.classList.add("active");
     activeTab = button.dataset.tab;
+    activeLibraryMonth = "";
+    librarySearchTerm = "";
+    libraryReviewFilter = "all";
+    $("#library-search").value = "";
+    $("#library-review-filter").value = "all";
     renderDataTable();
   });
 });

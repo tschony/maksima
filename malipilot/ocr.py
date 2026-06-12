@@ -110,6 +110,7 @@ def run_tesseract_ocr(path: Path) -> str:
 
 def extract_z_report(raw_text: str, client_id: int, period: str, source_file: str) -> dict[str, Any]:
     text = normalize_ocr_text(raw_text)
+    report_date = parse_ocr_date(text) or ""
     total = first_amount_after(text, ["GENEL TOPLAM", "TOPLAM", "TOTAL", "SATIS", "SATIŞ"])
     z_no = first_match(text, [r"\bZ\s*(?:NO|NUMARA|RAPOR)\s*[:\-]?\s*([A-Z0-9\-]+)", r"\bZ\s*([0-9]{2,})\b"])
     vat_lines = extract_vat_lines(text)
@@ -125,9 +126,9 @@ def extract_z_report(raw_text: str, client_id: int, period: str, source_file: st
         confidence += 0.1
     return {
         "client_id": client_id,
-        "period": period,
+        "period": report_date[:7] if report_date and len(report_date) >= 7 else period,
         "source_file": source_file,
-        "report_date": parse_ocr_date(text) or "",
+        "report_date": report_date,
         "device_brand": guess_device_brand(text),
         "device_serial": first_match(text, [r"(?:SERI|SERİ|SERIAL)\s*(?:NO)?\s*[:\-]?\s*([A-Z0-9\-]+)"]) or "",
         "z_no": z_no or "",
@@ -142,6 +143,7 @@ def extract_z_report(raw_text: str, client_id: int, period: str, source_file: st
 
 def extract_receipt(raw_text: str, client_id: int, period: str, source_file: str) -> dict[str, Any]:
     text = normalize_ocr_text(raw_text)
+    receipt_date = parse_ocr_date(text) or ""
     tax_id = extract_tax_id(text)
     total = receipt_total(text)
     vat = receipt_vat(text, total)
@@ -164,9 +166,9 @@ def extract_receipt(raw_text: str, client_id: int, period: str, source_file: str
         status = "manuel_kontrol"
     return {
         "client_id": client_id,
-        "period": period,
+        "period": receipt_date[:7] if receipt_date and len(receipt_date) >= 7 else period,
         "source_file": source_file,
-        "receipt_date": parse_ocr_date(text) or "",
+        "receipt_date": receipt_date,
         "merchant_name": merchant,
         "vkn_tckn": tax_id,
         "document_no": extract_document_no(text),

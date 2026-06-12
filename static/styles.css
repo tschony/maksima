@@ -555,6 +555,144 @@ button:hover {
   color: #fff;
 }
 
+.library-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+.summary-card {
+  min-height: 78px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.summary-card span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.2;
+  font-weight: 800;
+}
+
+.summary-card strong {
+  display: block;
+  margin-top: 9px;
+  color: var(--blue-deep);
+  font-size: 22px;
+  line-height: 1;
+  font-weight: 900;
+}
+
+.library-filter {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 210px auto;
+  gap: 10px;
+  align-items: end;
+  margin: 0 0 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbff;
+}
+
+.library-filter[hidden] {
+  display: none;
+}
+
+.library-title-row {
+  margin-bottom: 12px;
+}
+
+.folder-hint {
+  padding: 12px 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  background: #f8fbff;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+  font-weight: 750;
+}
+
+.library-detail-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: end;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.library-detail-title span,
+.month-folder span {
+  display: block;
+  color: var(--cyan);
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 900;
+}
+
+.library-detail-title strong {
+  display: block;
+  margin-top: 6px;
+  color: var(--ink);
+  font-size: 18px;
+  line-height: 1.15;
+  font-weight: 900;
+}
+
+.library-detail-title small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.month-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px;
+}
+
+.month-folder {
+  display: grid;
+  min-height: 136px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  text-align: left;
+}
+
+.month-folder:hover {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.month-folder strong {
+  display: block;
+  margin-top: 12px;
+  color: var(--blue-deep);
+  font-size: 22px;
+  line-height: 1.08;
+  font-weight: 900;
+}
+
+.month-folder small {
+  align-self: end;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  font-weight: 800;
+}
+
 .module-picker {
   display: grid;
   grid-template-columns: 1fr;
@@ -709,6 +847,26 @@ button:hover {
   background: var(--blue);
   color: #fff;
   font-size: 12px;
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.tiny-button {
+  min-height: 30px;
+  padding: 0 9px;
+  border-color: var(--line-strong);
+  background: #fff;
+  color: var(--blue-deep);
+  font-size: 11px;
+}
+
+.tiny-button:hover {
+  border-color: var(--blue);
+  background: var(--blue-soft);
 }
 
 .selected-row td {
@@ -904,6 +1062,9 @@ th {
   .client-list,
   .workspace-nav,
   .workspace-controls,
+  .library-summary,
+  .library-filter,
+  .month-grid,
   .rule-grid,
   .review-field-grid {
     grid-template-columns: 1fr;

@@ -19,7 +19,7 @@ from malipilot.server import (
     handle_upload_url,
     update_review_item,
 )
-from malipilot.persistence import export_sheets, get_clients
+from malipilot.persistence import export_sheets, get_clients, get_document_record, read_document_content
 from malipilot.storage import EXPORT_DIR
 
 
@@ -56,6 +56,8 @@ def handle_get(path: str, query: dict[str, list[str]]):
         return json_payload(get_review_item(query))
     if path == "/api/export":
         return export_payload(query)
+    if path == "/api/document":
+        return document_payload(query)
     return json_payload({"error": "Sayfa bulunamadı"}, HTTPStatus.NOT_FOUND)
 
 
@@ -117,6 +119,29 @@ def export_payload(query: dict[str, list[str]]):
         [
             ("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
             ("Content-Disposition", f'attachment; filename="{filename}"'),
+            ("Content-Length", str(len(body))),
+        ],
+        body,
+    )
+
+
+def document_payload(query: dict[str, list[str]]):
+    document_id = int((query.get("document_id") or ["0"])[0])
+    client_id = int((query.get("client_id") or ["0"])[0])
+    if not document_id or not client_id:
+        return json_payload({"error": "Belge ve mükellef gerekli"}, HTTPStatus.BAD_REQUEST)
+    document = get_document_record(document_id, client_id)
+    if not document:
+        return json_payload({"error": "Belge bulunamadı"}, HTTPStatus.NOT_FOUND)
+    try:
+        body, filename = read_document_content(document)
+    except FileNotFoundError:
+        return json_payload({"error": "Belge dosyası bulunamadı"}, HTTPStatus.NOT_FOUND)
+    return (
+        HTTPStatus.OK,
+        [
+            ("Content-Type", mimetypes.guess_type(filename)[0] or "application/octet-stream"),
+            ("Content-Disposition", f'inline; filename="{filename}"'),
             ("Content-Length", str(len(body))),
         ],
         body,

@@ -125,6 +125,23 @@
               <button type="button" class="tab" data-tab="receipt">Fişler</button>
               <button type="button" class="tab" data-tab="docs">Yüklemeler</button>
             </div>
+            <div id="library-summary" class="library-summary" aria-label="Dönem özeti"></div>
+            <div id="library-filter" class="library-filter" hidden>
+              <label>
+                Arama
+                <input id="library-search" placeholder="Satıcı, açıklama, belge no..." />
+              </label>
+              <label>
+                Kontrol durumu
+                <select id="library-review-filter">
+                  <option value="all">Tümü</option>
+                  <option value="review">Kontrol gerekenler</option>
+                  <option value="done">Kontrol gerekmeyenler</option>
+                </select>
+              </label>
+              <button type="button" id="library-back" class="secondary">Ay klasörlerine dön</button>
+            </div>
+            <div id="library-title-row" class="library-title-row"></div>
             <div id="data-table" class="table-wrap"></div>
           </section>
 

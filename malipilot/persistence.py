@@ -155,6 +155,30 @@ def get_client(client_id: int) -> dict[str, Any] | None:
         return row(conn, "select * from clients where id = ?", (client_id,))
 
 
+def get_document_record(document_id: int, client_id: int | None = None) -> dict[str, Any] | None:
+    if using_supabase():
+        params: dict[str, Any] = {"select": "*", "id": f"eq.{document_id}"}
+        if client_id:
+            params["client_id"] = f"eq.{client_id}"
+        return client().single("documents", params)
+    with connect() as conn:
+        if client_id:
+            return row(conn, "select * from documents where id = ? and client_id = ?", (document_id, client_id))
+        return row(conn, "select * from documents where id = ?", (document_id,))
+
+
+def read_document_content(document: dict[str, Any]) -> tuple[bytes, str]:
+    filename = Path(document.get("original_name") or "belge").name
+    stored_path = str(document.get("stored_path") or "")
+    if stored_path.startswith("supabase://"):
+        object_path = stored_path.removeprefix("supabase://").split("/", 1)[-1]
+        return client().download_object(object_path), filename
+    path = Path(stored_path)
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError("Belge dosyası bulunamadı")
+    return path.read_bytes(), filename
+
+
 def create_client_record(name: str, alias: str) -> dict[str, Any]:
     if using_supabase():
         return client().insert("clients", {"name": name, "alias": alias})
@@ -478,9 +502,9 @@ def api_state_payload(ai_info: dict[str, str]) -> dict[str, Any]:
             "review": len(review_needed()),
         },
         "recent_documents": recent_documents(),
-        "bank_rows": list_rows("bank_transactions", "id.desc", 50),
-        "z_reports": list_rows("z_reports", "id.desc", 30),
-        "receipts": list_rows("receipts", "id.asc", 100),
+        "bank_rows": list_rows("bank_transactions", "id.desc", 500),
+        "z_reports": list_rows("z_reports", "id.desc", 300),
+        "receipts": list_rows("receipts", "id.asc", 500),
         "review_items": review_needed(),
         "ai": ai_info,
         "storage": {"provider": backend_name()},
@@ -496,9 +520,9 @@ def count_table(table: str) -> int:
 
 def recent_documents() -> list[dict[str, Any]]:
     if using_supabase():
-        return client().select("documents", {"select": "*", "order": "id.desc", "limit": "10"})
+        return client().select("documents", {"select": "*", "order": "id.desc", "limit": "100"})
     with connect() as conn:
-        return rows(conn, "select * from documents order by id desc limit 10")
+        return rows(conn, "select * from documents order by id desc limit 100")
 
 
 def list_rows(table: str, order: str, limit: int) -> list[dict[str, Any]]:

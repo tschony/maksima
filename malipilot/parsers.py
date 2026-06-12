@@ -147,7 +147,7 @@ def parse_bank_file(path: Path, client_id: int, period: str, bank_name: str, rul
         counterparty = guess_counterparty(description)
         row = {
             "client_id": client_id,
-            "period": period,
+            "period": date[:7] if date and len(date) >= 7 else period,
             "bank_name": bank_name or "",
             "account_no_or_iban": account,
             "date": date,

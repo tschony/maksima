@@ -404,7 +404,7 @@ def normalize_gemini_receipt(item: dict[str, Any], client_id: int, period: str, 
         status = "manuel_kontrol"
     return {
         "client_id": client_id,
-        "period": period,
+        "period": receipt_date[:7] if receipt_date and len(receipt_date) >= 7 else period,
         "source_file": source_file,
         "receipt_date": receipt_date,
         "merchant_name": merchant,
@@ -428,7 +428,7 @@ def normalize_gemini_z_report(item: dict[str, Any], client_id: int, period: str,
     needs_review = bool(item.get("needs_review")) or confidence < 0.85 or not report_date or not gross_total or not z_no
     return {
         "client_id": client_id,
-        "period": period,
+        "period": report_date[:7] if report_date and len(report_date) >= 7 else period,
         "source_file": source_file,
         "report_date": report_date,
         "device_brand": clean_string(item.get("device_brand")),
