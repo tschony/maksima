@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT / "data"
+DATA_DIR = Path(os.environ.get("MALIYARDIMCI_DATA_DIR", "/tmp/maliyardimci-data" if os.environ.get("VERCEL") else str(ROOT / "data")))
 UPLOAD_DIR = DATA_DIR / "uploads"
 EXPORT_DIR = DATA_DIR / "exports"
 DB_PATH = DATA_DIR / "malipilot.sqlite3"
@@ -147,4 +148,3 @@ def account_rules(conn: sqlite3.Connection, client_id: int) -> list[dict[str, An
         "select * from account_code_rules where client_id is null or client_id = ? order by id desc",
         (client_id,),
     )
-

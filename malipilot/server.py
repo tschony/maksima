@@ -38,7 +38,7 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/export":
             self.handle_export(parse_qs(parsed.query))
         else:
-            self.error_json(HTTPStatus.NOT_FOUND, "Not found")
+            self.error_json(HTTPStatus.NOT_FOUND, "Sayfa bulunamadı")
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
@@ -55,7 +55,7 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/review-item":
                 self.json_response(update_review_item(payload))
             else:
-                self.error_json(HTTPStatus.NOT_FOUND, "Not found")
+                self.error_json(HTTPStatus.NOT_FOUND, "Sayfa bulunamadı")
         except Exception as exc:
             self.error_json(HTTPStatus.BAD_REQUEST, str(exc))
 
@@ -77,7 +77,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def serve_file(self, path: Path) -> None:
         if not path.exists() or not path.is_file():
-            self.error_json(HTTPStatus.NOT_FOUND, "File not found")
+            self.error_json(HTTPStatus.NOT_FOUND, "Dosya bulunamadı")
             return
         data = path.read_bytes()
         self.send_response(HTTPStatus.OK)
@@ -92,7 +92,7 @@ class Handler(BaseHTTPRequestHandler):
         with connect() as conn:
             client = row(conn, "select * from clients where id = ?", (client_id,))
             if not client:
-                self.error_json(HTTPStatus.NOT_FOUND, "Client not found")
+                self.error_json(HTTPStatus.NOT_FOUND, "Mükellef bulunamadı")
                 return
             where = "client_id = ? and period = ?"
             args = (client_id, period)
@@ -191,7 +191,7 @@ REVIEW_TABLES = {
 def review_config(item_type: str) -> dict:
     config = REVIEW_TABLES.get(item_type)
     if not config:
-        raise ValueError("Unknown review item type")
+        raise ValueError("Bilinmeyen kontrol türü")
     return config
 
 
