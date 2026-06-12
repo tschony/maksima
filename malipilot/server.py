@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .ai_extractor import extract_with_gemini, gemini_configured, gemini_model
+from .ai_extractor import GeminiExtractionError, extract_with_gemini, gemini_configured, gemini_model
 from .exporters import export_filename, write_workbook
 from .ocr import extract_receipt, extract_z_report, run_ocr_pages
 from .parsers import parse_bank_file
@@ -29,6 +29,7 @@ from .persistence import (
     insert_bank_transaction,
     insert_document_record,
     insert_extracted_item_record,
+    insert_extraction_run_record,
     mark_document_done,
     mark_document_failed,
     materialize_stored_upload,
@@ -288,43 +289,61 @@ def handle_stored_upload(payload: dict) -> dict:
 def process_uploaded_file(path: Path, stored_path: str, client_id: int, period: str, module: str, filename: str, bank_name: str = "") -> dict:
     doc_id = insert_document_record(client_id, period, module, filename, stored_path, "processing")
     warnings: list[str] = []
-    if module == "bank":
-        result = parse_bank_file(path, client_id, period, bank_name, get_account_rules(client_id))
-        warnings = result.warnings
-        for item in result.rows:
-            insert_bank_transaction(doc_id, item)
-    else:
-        ai_items, ai_warnings = [], []
-        try:
-            ai_items, ai_warnings = extract_with_gemini(path, module, client_id, period, filename)
-            warnings.extend(ai_warnings)
-        except Exception as exc:
-            warnings.append(f"Gemini kullanılamadı, yerel OCR denendi: {exc}")
-
-        if ai_items:
-            for item in ai_items:
-                insert_extracted_item(doc_id, module, item)
+    try:
+        if module == "bank":
+            result = parse_bank_file(path, client_id, period, bank_name, get_account_rules(client_id))
+            warnings = result.warnings
+            for item in result.rows:
+                insert_bank_transaction(doc_id, item)
         else:
-            if not can_use_local_ocr_fallback():
-                reason = "; ".join(warnings) if warnings else "Gemini yapılandırılmış kayıt döndürmedi"
-                message = f"Belge okunamadı: {reason}. Vercel ortamında yerel OCR kullanılamaz."
-                mark_document_failed(doc_id, [message])
-                raise RuntimeError(message)
-            ocr_pages = run_ocr_pages(path)
-            if len(ocr_pages) > 1:
-                warnings.append(f"{len(ocr_pages)} sayfa ayrı kayıt olarak işlendi")
-            if module == "z":
-                for ocr_page in ocr_pages:
-                    source_name = page_source_name(filename, "Z Raporu", ocr_page["page_number"], len(ocr_pages))
-                    item = extract_z_report(ocr_page["raw_text"], client_id, period, source_name)
+            ai_items, ai_warnings = [], []
+            try:
+                ai_items, ai_warnings, diagnostic = extract_with_gemini(path, module, client_id, period, filename)
+                record_extraction_run(doc_id, diagnostic, warnings)
+                warnings.extend(ai_warnings)
+            except GeminiExtractionError as exc:
+                record_extraction_run(doc_id, exc.diagnostic, warnings)
+                warnings.append(f"Gemini kullanılamadı, yerel OCR denendi: {exc}")
+            except Exception as exc:
+                warnings.append(f"Gemini kullanılamadı, yerel OCR denendi: {exc}")
+
+            if ai_items:
+                for item in ai_items:
                     insert_extracted_item(doc_id, module, item)
             else:
-                for ocr_page in ocr_pages:
-                    source_name = page_source_name(filename, "Fiş", ocr_page["page_number"], len(ocr_pages))
-                    item = extract_receipt(ocr_page["raw_text"], client_id, period, source_name)
-                    insert_extracted_item(doc_id, module, item)
-    mark_document_done(doc_id, warnings)
-    return {"ok": True, "document_id": doc_id, "warnings": warnings}
+                if not can_use_local_ocr_fallback():
+                    reason = "; ".join(warnings) if warnings else "Gemini yapılandırılmış kayıt döndürmedi"
+                    message = f"Belge okunamadı: {reason}. Vercel ortamında yerel OCR kullanılamaz."
+                    mark_document_failed(doc_id, [message])
+                    raise RuntimeError(message)
+                ocr_pages = run_ocr_pages(path)
+                if len(ocr_pages) > 1:
+                    warnings.append(f"{len(ocr_pages)} sayfa ayrı kayıt olarak işlendi")
+                if module == "z":
+                    for ocr_page in ocr_pages:
+                        source_name = page_source_name(filename, "Z Raporu", ocr_page["page_number"], len(ocr_pages))
+                        item = extract_z_report(ocr_page["raw_text"], client_id, period, source_name)
+                        insert_extracted_item(doc_id, module, item)
+                else:
+                    for ocr_page in ocr_pages:
+                        source_name = page_source_name(filename, "Fiş", ocr_page["page_number"], len(ocr_pages))
+                        item = extract_receipt(ocr_page["raw_text"], client_id, period, source_name)
+                        insert_extracted_item(doc_id, module, item)
+        mark_document_done(doc_id, warnings)
+        return {"ok": True, "document_id": doc_id, "warnings": warnings}
+    except Exception as exc:
+        failure_warnings = warnings + [str(exc)]
+        mark_document_failed(doc_id, failure_warnings)
+        raise
+
+
+def record_extraction_run(document_id: int, diagnostic: dict, warnings: list[str]) -> None:
+    if not diagnostic:
+        return
+    try:
+        insert_extraction_run_record(document_id, diagnostic)
+    except Exception as exc:
+        warnings.append(f"Gemini tanılama kaydı saklanamadı: {exc}")
 
 
 def can_use_local_ocr_fallback() -> bool:

@@ -20,7 +20,14 @@ GEMINI_UPLOAD_ENDPOINT = "https://generativelanguage.googleapis.com/upload/v1bet
 GEMINI_FILE_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/{name}"
 DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
 MAX_INLINE_BYTES = 18 * 1024 * 1024
+MAX_PDF_BYTES = 50 * 1024 * 1024
 GEMINI_FILE_WAIT_SECONDS = 22
+
+
+class GeminiExtractionError(RuntimeError):
+    def __init__(self, message: str, diagnostic: dict[str, Any]):
+        super().__init__(message)
+        self.diagnostic = diagnostic
 
 
 def gemini_configured() -> bool:
@@ -35,16 +42,35 @@ def gemini_api_key() -> str:
     return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
 
 
-def extract_with_gemini(path: Path, module: str, client_id: int, period: str, filename: str) -> tuple[list[dict[str, Any]], list[str]]:
+def extract_with_gemini(path: Path, module: str, client_id: int, period: str, filename: str) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
     if module not in {"receipt", "z"}:
-        return [], []
+        return [], [], {}
     if not gemini_configured():
-        return [], []
+        return [], [], {}
 
-    result = call_gemini(path, module)
+    started = time.monotonic()
+    diagnostic = gemini_diagnostic(path, module, filename)
+    try:
+        if diagnostic["input_method"] == "files_api" and path.stat().st_size > MAX_PDF_BYTES:
+            raise RuntimeError(f"PDF Gemini sınırını aşıyor: {path.stat().st_size} bayt")
+        result = call_gemini(path, module)
+    except Exception as exc:
+        diagnostic.update(
+            {
+                "status": "failed",
+                "duration_ms": elapsed_ms(started),
+                "error_message": str(exc)[:2000],
+            }
+        )
+        raise GeminiExtractionError(str(exc), diagnostic) from exc
+
     items = result.get("items") if isinstance(result, dict) else None
+    diagnostic["raw_response"] = truncate_json(result)
+    diagnostic["duration_ms"] = elapsed_ms(started)
     if not isinstance(items, list) or not items:
-        return [], ["Gemini yapılandırılmış kayıt döndürmedi"]
+        diagnostic["status"] = "failed"
+        diagnostic["error_message"] = "Gemini yapılandırılmış kayıt döndürmedi"
+        return [], ["Gemini yapılandırılmış kayıt döndürmedi"], diagnostic
 
     normalized = []
     for index, item in enumerate(items, start=1):
@@ -55,11 +81,39 @@ def extract_with_gemini(path: Path, module: str, client_id: int, period: str, fi
             normalized.append(normalize_gemini_receipt(item, client_id, period, source_name))
         else:
             normalized.append(normalize_gemini_z_report(item, client_id, period, source_name))
+    diagnostic["status"] = "ok"
+    diagnostic["item_count"] = len(normalized)
     warnings = [f"Gemini {gemini_model()} ile işlendi"]
     notes = result.get("document_notes") if isinstance(result, dict) else ""
     if notes:
         warnings.append(str(notes)[:300])
-    return normalized, warnings
+    return normalized, warnings, diagnostic
+
+
+def gemini_diagnostic(path: Path, module: str, filename: str) -> dict[str, Any]:
+    mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return {
+        "provider": "gemini",
+        "model": gemini_model(),
+        "module": module,
+        "file_name": filename,
+        "file_size": path.stat().st_size,
+        "input_method": "files_api" if should_use_file_api(path, mime_type) else "inline_data",
+        "status": "started",
+        "item_count": 0,
+        "duration_ms": 0,
+        "raw_response": "",
+        "error_message": "",
+    }
+
+
+def elapsed_ms(started: float) -> int:
+    return int((time.monotonic() - started) * 1000)
+
+
+def truncate_json(value: Any, max_chars: int = 80000) -> str:
+    text = json.dumps(value, ensure_ascii=False, default=str)
+    return text[:max_chars]
 
 
 def call_gemini(path: Path, module: str) -> dict[str, Any]:

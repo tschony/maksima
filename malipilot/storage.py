@@ -119,6 +119,22 @@ def init_db(conn: sqlite3.Connection) -> None:
             note text,
             created_at text default current_timestamp
         );
+        create table if not exists extraction_runs (
+            id integer primary key autoincrement,
+            document_id integer not null,
+            provider text not null,
+            model text,
+            module text,
+            file_name text,
+            file_size integer,
+            input_method text,
+            status text not null,
+            item_count integer default 0,
+            duration_ms integer,
+            raw_response text,
+            error_message text,
+            created_at text default current_timestamp
+        );
         """
     )
     conn.commit()

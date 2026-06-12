@@ -275,6 +275,50 @@ def mark_document_failed(document_id: int, warnings: list[str]) -> None:
         conn.commit()
 
 
+def insert_extraction_run_record(document_id: int, diagnostic: dict[str, Any]) -> None:
+    payload = {
+        "document_id": document_id,
+        "provider": diagnostic.get("provider") or "gemini",
+        "model": diagnostic.get("model") or "",
+        "module": diagnostic.get("module") or "",
+        "file_name": diagnostic.get("file_name") or "",
+        "file_size": int(diagnostic.get("file_size") or 0),
+        "input_method": diagnostic.get("input_method") or "",
+        "status": diagnostic.get("status") or "unknown",
+        "item_count": int(diagnostic.get("item_count") or 0),
+        "duration_ms": int(diagnostic.get("duration_ms") or 0),
+        "raw_response": diagnostic.get("raw_response") or "",
+        "error_message": diagnostic.get("error_message") or "",
+    }
+    if using_supabase():
+        client().insert("extraction_runs", payload)
+        return
+    with connect() as conn:
+        conn.execute(
+            """
+            insert into extraction_runs
+            (document_id, provider, model, module, file_name, file_size, input_method, status, item_count, duration_ms,
+             raw_response, error_message)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload["document_id"],
+                payload["provider"],
+                payload["model"],
+                payload["module"],
+                payload["file_name"],
+                payload["file_size"],
+                payload["input_method"],
+                payload["status"],
+                payload["item_count"],
+                payload["duration_ms"],
+                payload["raw_response"],
+                payload["error_message"],
+            ),
+        )
+        conn.commit()
+
+
 def insert_bank_transaction(document_id: int, item: dict[str, Any]) -> None:
     payload = {
         "document_id": document_id,

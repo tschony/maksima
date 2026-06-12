@@ -32,6 +32,7 @@ Für Z raporları werden entsprechend Datum, Z no, cihaz bilgisi, toplam tutar, 
 7. Unsichere, fehlende oder widersprüchliche Felder landen in `Kontrol`.
 8. Wenn Gemini lokal nicht verfügbar ist, nutzt das System die bisherige lokale OCR als Fallback.
 9. Auf Vercel wird kein leerer OCR-Fallback erzeugt: Wenn Gemini nicht liefert, wird das Dokument als `failed` markiert.
+10. Jeder Gemini-Lauf wird in `extraction_runs` protokolliert: Modell, Dateigröße, Methode, Dauer, Status, Antwort oder Fehler.
 
 ## Umgebung
 
@@ -71,6 +72,8 @@ Der API-Key darf nie in GitHub, Markdown, Screenshots oder Testdateien gespeiche
 - `.env.example`: Vorlage für lokale Gemini-Konfiguration ohne echten Key.
 - `.env.local`: lokale echte Konfiguration, wird nicht versioniert.
 - `malipilot/server.py`: Upload-Ablauf, Gemini zuerst, lokale OCR nur außerhalb von Vercel als Fallback.
+- `malipilot/persistence.py`: Speichert Dokumentstatus und Gemini-Diagnose.
+- `supabase_schema.sql`: Enthält die Tabelle `extraction_runs` für auditierbare Verarbeitungen.
 - `static/index.html`: sichtbare Anzeige, ob Gemini oder lokale OCR aktiv ist.
 - `static/app.js`: rendert den aktuellen Belge-okuma-Status.
 - `GEMINI_BELEG_PIPELINE.md`: diese Arbeitsnotiz.
@@ -82,6 +85,7 @@ Für große PDF-Dateien gibt es zwei Grenzen:
 
 - Browser zu Vercel: Dateien über ca. 3 MB werden direkt in Supabase Storage geladen und danach verarbeitet.
 - Vercel zu Gemini: PDFs über ca. 18 MB werden nicht mehr als Base64 `inlineData` gesendet, sondern über die Gemini Files API hochgeladen und dann per `fileUri` verarbeitet.
+- PDFs über ca. 50 MB werden nicht still verarbeitet, sondern klar als zu groß abgelehnt.
 
 Wenn eine Datei trotz Files API zu lange dauert, ist der nächste technische Schritt eine asynchrone Job-Warteschlange mit Statusanzeige statt synchronem Warten im Browser.
 
@@ -130,7 +134,7 @@ Ein Z raporu bleibt in der Kontrolle, wenn:
 
 1. Persistente Datenbank anbinden.
 2. Upload-Dateien dauerhaft speichern.
-3. Gemini-Rohantworten auditierbar speichern.
-4. Pro Beleg eine Vorher/Nachher-Bewertung erfassen.
-5. Ali-Testpaket mit 20 Belegen laufen lassen.
-6. Fehlerliste aus den 20 Belegen in Parser- und Prompt-Regeln übersetzen.
+3. Pro Beleg eine Vorher/Nachher-Bewertung erfassen.
+4. Ali-Testpaket mit 20 Belegen laufen lassen.
+5. Fehlerliste aus den 20 Belegen in Parser- und Prompt-Regeln übersetzen.
+6. Asynchrone Job-Verarbeitung bauen, falls große PDFs weiterhin in Vercel-Zeitlimits laufen.

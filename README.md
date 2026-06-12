@@ -53,6 +53,7 @@ Supabase şeması `supabase_schema.sql` dosyasındadır. Bu değişkenler yoksa 
 - Z raporu ve fiş/gider belgesi yükleme.
 - Gemini varsa belge alanlarını doğrudan çıkarma; yoksa yerel OCR ile alanları tahmin etme.
 - Büyük PDF'leri önce Supabase Storage'a, ardından Gemini Files API'ye yönlendirme.
+- Gemini okuma denemelerini `extraction_runs` tablosunda denetlenebilir şekilde saklama.
 - Düşük güvenli veya eksik alanları kontrol kuyruğuna alma.
 - Düzeltmeleri saklama.
 - Mükellef ve dönem bazlı tablo çıktısı üretme.
