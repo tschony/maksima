@@ -96,6 +96,13 @@ function renderCounts() {
   ]
     .map(([label, value]) => `<div class="count"><strong>${value}</strong><span>${label}</span></div>`)
     .join("");
+  const aiStatus = $("#ai-status");
+  if (aiStatus) {
+    aiStatus.textContent =
+      state.ai?.provider === "gemini"
+        ? `Belge okuma: Gemini (${state.ai.model})`
+        : "Belge okuma: yerel OCR";
+  }
 }
 
 function renderClientOptions() {

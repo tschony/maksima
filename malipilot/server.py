@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .ai_extractor import extract_with_gemini, gemini_configured, gemini_model
 from .exporters import export_filename, write_workbook
 from .ocr import extract_receipt, extract_z_report, run_ocr_pages
 from .parsers import parse_bank_file
@@ -133,6 +134,10 @@ def api_state() -> dict:
             "z_reports": rows(conn, "select * from z_reports order by id desc limit 30"),
             "receipts": rows(conn, "select * from receipts order by id asc limit 100"),
             "review_items": review_needed(conn),
+            "ai": {
+                "provider": "gemini" if gemini_configured() else "yerel",
+                "model": gemini_model() if gemini_configured() else "",
+            },
         }
 
 
@@ -325,38 +330,56 @@ def handle_upload(payload: dict) -> dict:
                     ),
                 )
         else:
-            ocr_pages = run_ocr_pages(path)
-            if len(ocr_pages) > 1:
-                warnings.append(f"{len(ocr_pages)} sayfa ayrı kayıt olarak işlendi")
-            if module == "z":
-                for ocr_page in ocr_pages:
-                    source_name = page_source_name(filename, "Z Raporu", ocr_page["page_number"], len(ocr_pages))
-                    item = extract_z_report(ocr_page["raw_text"], client_id, period, source_name)
-                    conn.execute(
-                        """
-                        insert into z_reports
-                        (document_id, client_id, period, source_file, report_date, device_brand, device_serial, z_no, gross_total,
-                         vat_lines, payment_breakdown, confidence, needs_review, raw_text)
-                        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (doc_id, item["client_id"], item["period"], item["source_file"], item["report_date"], item["device_brand"], item["device_serial"], item["z_no"], item["gross_total"], item["vat_lines"], item["payment_breakdown"], item["confidence"], int(item["needs_review"]), item["raw_text"]),
-                    )
+            ai_items, ai_warnings = [], []
+            try:
+                ai_items, ai_warnings = extract_with_gemini(path, module, client_id, period, filename)
+                warnings.extend(ai_warnings)
+            except Exception as exc:
+                warnings.append(f"Gemini kullanılamadı, yerel OCR denendi: {exc}")
+
+            if ai_items:
+                for item in ai_items:
+                    insert_extracted_item(conn, module, doc_id, item)
             else:
-                for ocr_page in ocr_pages:
-                    source_name = page_source_name(filename, "Fiş", ocr_page["page_number"], len(ocr_pages))
-                    item = extract_receipt(ocr_page["raw_text"], client_id, period, source_name)
-                    conn.execute(
-                        """
-                        insert into receipts
-                        (document_id, client_id, period, source_file, receipt_date, merchant_name, vkn_tckn, document_no, gross_total,
-                         vat_total, payment_method, bookkeeping_status, confidence, needs_review, raw_text)
-                        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (doc_id, item["client_id"], item["period"], item["source_file"], item["receipt_date"], item["merchant_name"], item["vkn_tckn"], item["document_no"], item["gross_total"], item["vat_total"], item["payment_method"], item["bookkeeping_status"], item["confidence"], int(item["needs_review"]), item["raw_text"]),
-                    )
+                ocr_pages = run_ocr_pages(path)
+                if len(ocr_pages) > 1:
+                    warnings.append(f"{len(ocr_pages)} sayfa ayrı kayıt olarak işlendi")
+                if module == "z":
+                    for ocr_page in ocr_pages:
+                        source_name = page_source_name(filename, "Z Raporu", ocr_page["page_number"], len(ocr_pages))
+                        item = extract_z_report(ocr_page["raw_text"], client_id, period, source_name)
+                        insert_extracted_item(conn, module, doc_id, item)
+                else:
+                    for ocr_page in ocr_pages:
+                        source_name = page_source_name(filename, "Fiş", ocr_page["page_number"], len(ocr_pages))
+                        item = extract_receipt(ocr_page["raw_text"], client_id, period, source_name)
+                        insert_extracted_item(conn, module, doc_id, item)
         conn.execute("update documents set status = ?, warnings = ? where id = ?", ("done", json.dumps(warnings, ensure_ascii=False), doc_id))
         conn.commit()
     return {"ok": True, "document_id": doc_id, "warnings": warnings}
+
+
+def insert_extracted_item(conn, module: str, doc_id: int, item: dict) -> None:
+    if module == "z":
+        conn.execute(
+            """
+            insert into z_reports
+            (document_id, client_id, period, source_file, report_date, device_brand, device_serial, z_no, gross_total,
+             vat_lines, payment_breakdown, confidence, needs_review, raw_text)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (doc_id, item["client_id"], item["period"], item["source_file"], item["report_date"], item["device_brand"], item["device_serial"], item["z_no"], item["gross_total"], item["vat_lines"], item["payment_breakdown"], item["confidence"], int(item["needs_review"]), item["raw_text"]),
+        )
+        return
+    conn.execute(
+        """
+        insert into receipts
+        (document_id, client_id, period, source_file, receipt_date, merchant_name, vkn_tckn, document_no, gross_total,
+         vat_total, payment_method, bookkeeping_status, confidence, needs_review, raw_text)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (doc_id, item["client_id"], item["period"], item["source_file"], item["receipt_date"], item["merchant_name"], item["vkn_tckn"], item["document_no"], item["gross_total"], item["vat_total"], item["payment_method"], item["bookkeeping_status"], item["confidence"], int(item["needs_review"]), item["raw_text"]),
+    )
 
 
 def page_source_name(filename: str, label: str, page_number: int, page_count: int) -> str:

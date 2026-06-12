@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from malipilot.exporters import write_workbook
+from malipilot.ai_extractor import normalize_gemini_receipt, normalize_gemini_z_report
 from malipilot.ocr import extract_receipt, extract_z_report
 from malipilot.parsers import parse_bank_file, parse_decimal, read_xlsx
 
@@ -68,6 +69,66 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(item["vat_total"], "2.38")
         self.assertEqual(item["payment_method"], "kart")
         self.assertTrue(item["needs_review"])
+
+    def test_gemini_receipt_normalization_marks_complete_receipt_safe(self):
+        item = normalize_gemini_receipt(
+            {
+                "receipt_date": "10/05/2026",
+                "merchant_name": "A101 YENI MAGAZACILIK A.Ş.",
+                "vkn_tckn": "9480423762",
+                "document_no": "737400210608050171",
+                "gross_total": "240,00",
+                "vat_total": "2,38",
+                "payment_method": "kart",
+                "bookkeeping_status": "uygun",
+                "confidence": 0.92,
+                "needs_review": False,
+            },
+            client_id=1,
+            period="2026-06",
+            source_file="fis.pdf",
+        )
+        self.assertEqual(item["receipt_date"], "2026-05-10")
+        self.assertEqual(item["gross_total"], "240.00")
+        self.assertEqual(item["vat_total"], "2.38")
+        self.assertFalse(item["needs_review"])
+
+    def test_gemini_receipt_normalization_keeps_missing_tax_id_in_review(self):
+        item = normalize_gemini_receipt(
+            {
+                "receipt_date": "2026-05-10",
+                "merchant_name": "RESTORAN",
+                "gross_total": "850.00",
+                "bookkeeping_status": "uygun",
+                "confidence": 0.91,
+                "needs_review": False,
+            },
+            client_id=1,
+            period="2026-06",
+            source_file="fis.pdf",
+        )
+        self.assertEqual(item["bookkeeping_status"], "eksik")
+        self.assertTrue(item["needs_review"])
+
+    def test_gemini_z_report_normalization(self):
+        item = normalize_gemini_z_report(
+            {
+                "report_date": "05.06.2026",
+                "device_brand": "BEKO",
+                "z_no": "12345",
+                "gross_total": "720,00",
+                "vat_lines": [{"rate": "20", "amount": "120,00"}],
+                "payment_breakdown": {"cash": "200,00", "card": "520,00"},
+                "confidence": 0.9,
+                "needs_review": False,
+            },
+            client_id=1,
+            period="2026-06",
+            source_file="z.pdf",
+        )
+        self.assertEqual(item["report_date"], "2026-06-05")
+        self.assertEqual(item["gross_total"], "720.00")
+        self.assertFalse(item["needs_review"])
 
     def test_xlsx_roundtrip_for_simple_export(self):
         with tempfile.TemporaryDirectory() as tmp:

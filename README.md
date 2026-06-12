@@ -22,6 +22,18 @@ http://127.0.0.1:8765
 python3 -m unittest discover -s tests
 ```
 
+## Gemini ile Belge Okuma
+
+Fiş ve Z raporu yüklemelerinde Gemini kullanmak için:
+
+```bash
+export GEMINI_API_KEY="DEIN_KEY"
+export MALIYARDIMCI_GEMINI_MODEL="gemini-3.5-flash"
+python3 -m malipilot.server
+```
+
+Vercel'de aynı değerler Project Settings -> Environment Variables bölümüne eklenir. Ayrıntılı akış için `GEMINI_BELEG_PIPELINE.md` dosyasına bak.
+
 ## Bu Pilot Ne Yapar?
 
 - Anonim mükellef oluşturma.
