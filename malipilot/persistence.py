@@ -53,6 +53,9 @@ class SupabaseRest:
         result = self.request_json("PATCH", f"/rest/v1/{table}", params=filters, payload=payload, prefer="return=representation")
         return result[0] if result else None
 
+    def delete(self, table: str, filters: dict[str, Any]) -> None:
+        self.request("DELETE", f"/rest/v1/{table}", params=filters).read()
+
     def count(self, table: str) -> int:
         request = self.request("GET", f"/rest/v1/{table}", params={"select": "id"}, headers={"Prefer": "count=exact", "Range": "0-0"})
         content_range = request.headers.get("Content-Range", "")
@@ -98,6 +101,9 @@ class SupabaseRest:
         quoted_path = "/".join(urllib.parse.quote(part) for part in object_path.split("/"))
         response = self.request("GET", f"/storage/v1/object/{SUPABASE_BUCKET}/{quoted_path}")
         return response.read()
+
+    def delete_object(self, object_path: str) -> None:
+        self.request_json("POST", f"/storage/v1/object/{SUPABASE_BUCKET}/remove", payload={"prefixes": [object_path]})
 
     def request_json(
         self,
@@ -177,6 +183,90 @@ def read_document_content(document: dict[str, Any]) -> tuple[bytes, str]:
     if not path.exists() or not path.is_file():
         raise FileNotFoundError("Belge dosyası bulunamadı")
     return path.read_bytes(), filename
+
+
+def delete_document_record(document_id: int, client_id: int) -> dict[str, Any]:
+    document = get_document_record(document_id, client_id)
+    if not document:
+        raise ValueError("Belge bulunamadı")
+    related = related_item_ids(document_id)
+    if using_supabase():
+        supabase = client()
+        for item_type, item_ids in related.items():
+            for item_id in item_ids:
+                supabase.delete("feedback", {"item_type": f"eq.{item_type}", "item_id": f"eq.{item_id}"})
+        for table_name in ("bank_transactions", "z_reports", "receipts", "extraction_runs"):
+            supabase.delete(table_name, {"document_id": f"eq.{document_id}"})
+        supabase.delete("documents", {"id": f"eq.{document_id}", "client_id": f"eq.{client_id}"})
+    else:
+        with connect() as conn:
+            for item_type, item_ids in related.items():
+                for item_id in item_ids:
+                    conn.execute("delete from feedback where item_type = ? and item_id = ?", (item_type, item_id))
+            for table_name in ("bank_transactions", "z_reports", "receipts", "extraction_runs"):
+                conn.execute(f"delete from {table_name} where document_id = ?", (document_id,))
+            conn.execute("delete from documents where id = ? and client_id = ?", (document_id, client_id))
+            conn.commit()
+    storage_warning = delete_stored_document(document)
+    return {"ok": True, "deleted": "document", "document_id": document_id, "storage_warning": storage_warning}
+
+
+def delete_extracted_item_record(item_type: str, item_id: int, client_id: int) -> dict[str, Any]:
+    table_name = item_table_name(item_type)
+    if using_supabase():
+        supabase = client()
+        item = supabase.single(table_name, {"select": "*", "id": f"eq.{item_id}", "client_id": f"eq.{client_id}"})
+        if not item:
+            raise ValueError("Kayıt bulunamadı")
+        supabase.delete("feedback", {"item_type": f"eq.{item_type}", "item_id": f"eq.{item_id}"})
+        supabase.delete(table_name, {"id": f"eq.{item_id}", "client_id": f"eq.{client_id}"})
+    else:
+        with connect() as conn:
+            item = row(conn, f"select * from {table_name} where id = ? and client_id = ?", (item_id, client_id))
+            if not item:
+                raise ValueError("Kayıt bulunamadı")
+            conn.execute("delete from feedback where item_type = ? and item_id = ?", (item_type, item_id))
+            conn.execute(f"delete from {table_name} where id = ? and client_id = ?", (item_id, client_id))
+            conn.commit()
+    return {"ok": True, "deleted": item_type, "id": item_id, "document_id": item.get("document_id")}
+
+
+def item_table_name(item_type: str) -> str:
+    tables = {"bank": "bank_transactions", "z": "z_reports", "receipt": "receipts"}
+    table_name = tables.get(item_type)
+    if not table_name:
+        raise ValueError("Bilinmeyen kayıt türü")
+    return table_name
+
+
+def related_item_ids(document_id: int) -> dict[str, list[int]]:
+    if using_supabase():
+        supabase = client()
+        return {
+            "bank": [int(item["id"]) for item in supabase.select("bank_transactions", {"select": "id", "document_id": f"eq.{document_id}"})],
+            "z": [int(item["id"]) for item in supabase.select("z_reports", {"select": "id", "document_id": f"eq.{document_id}"})],
+            "receipt": [int(item["id"]) for item in supabase.select("receipts", {"select": "id", "document_id": f"eq.{document_id}"})],
+        }
+    with connect() as conn:
+        return {
+            "bank": [int(item["id"]) for item in rows(conn, "select id from bank_transactions where document_id = ?", (document_id,))],
+            "z": [int(item["id"]) for item in rows(conn, "select id from z_reports where document_id = ?", (document_id,))],
+            "receipt": [int(item["id"]) for item in rows(conn, "select id from receipts where document_id = ?", (document_id,))],
+        }
+
+
+def delete_stored_document(document: dict[str, Any]) -> str:
+    stored_path = str(document.get("stored_path") or "")
+    try:
+        if stored_path.startswith("supabase://"):
+            object_path = stored_path.removeprefix("supabase://").split("/", 1)[-1]
+            client().delete_object(object_path)
+            return ""
+        if stored_path:
+            Path(stored_path).unlink(missing_ok=True)
+    except Exception as exc:
+        return f"Dosya kaydı silindi, ancak depodaki dosya silinemedi: {exc}"
+    return ""
 
 
 def create_client_record(name: str, alias: str) -> dict[str, Any]:

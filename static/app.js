@@ -567,8 +567,12 @@ function renderLibraryActions(row, tabName) {
   }
   if (tabName !== "docs") {
     controls.push(`<button type="button" class="tiny-button library-review-open" data-item-type="${escapeHtml(tabName)}" data-id="${escapeHtml(row.id)}">Kontrol et</button>`);
+    controls.push(`<button type="button" class="tiny-button danger library-item-delete" data-item-type="${escapeHtml(tabName)}" data-id="${escapeHtml(row.id)}">Sil</button>`);
   } else if (documentNeedsReview(row.id)) {
     controls.push('<button type="button" class="tiny-button library-review-tab">Kontrole git</button>');
+  }
+  if (tabName === "docs" && documentId) {
+    controls.push(`<button type="button" class="tiny-button danger document-delete" data-document-id="${escapeHtml(documentId)}">Sil</button>`);
   }
   return `<div class="row-actions">${controls.join("")}</div>`;
 }
@@ -586,12 +590,45 @@ function bindLibraryActions() {
   $$(".library-review-tab").forEach((button) => {
     button.addEventListener("click", () => switchView("review"));
   });
+  $$(".library-item-delete").forEach((button) => {
+    button.addEventListener("click", () => deleteLibraryItem(button.dataset.itemType, button.dataset.id));
+  });
+  $$(".document-delete").forEach((button) => {
+    button.addEventListener("click", () => deleteDocument(button.dataset.documentId));
+  });
 }
 
 function openDocument(documentId) {
   const client = selectedClient();
   if (!client || !documentId) return;
   window.open(`/api/document?document_id=${encodeURIComponent(documentId)}&client_id=${encodeURIComponent(client.id)}`, "_blank", "noopener");
+}
+
+async function deleteLibraryItem(itemType, itemId) {
+  const client = selectedClient();
+  if (!client || !itemType || !itemId) return;
+  const label = TYPE_LABELS[itemType] || "Kayıt";
+  if (!window.confirm(`${label} kaydı silinsin mi? Bu işlem geri alınamaz.`)) return;
+  await api("/api/delete-item", {
+    method: "POST",
+    body: JSON.stringify({ client_id: client.id, item_type: itemType, id: itemId }),
+  });
+  showMessage("Kayıt silindi.");
+  await refresh();
+  renderDataTable();
+}
+
+async function deleteDocument(documentId) {
+  const client = selectedClient();
+  if (!client || !documentId) return;
+  if (!window.confirm("Bu yükleme ve ona bağlı bütün satırlar silinsin mi? Bu işlem geri alınamaz.")) return;
+  const result = await api("/api/delete-document", {
+    method: "POST",
+    body: JSON.stringify({ client_id: client.id, document_id: documentId }),
+  });
+  showMessage(result.storage_warning || "Belge ve bağlı kayıtlar silindi.");
+  await refresh();
+  renderDataTable();
 }
 
 function applyLibraryFilters(rows, tabName) {

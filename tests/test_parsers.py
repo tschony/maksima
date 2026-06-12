@@ -24,6 +24,14 @@ from malipilot.ai_extractor import (
 )
 from malipilot.ocr import extract_receipt, extract_z_report
 from malipilot.parsers import parse_bank_file, parse_decimal, read_xlsx
+from malipilot import persistence, storage
+from malipilot.persistence import (
+    delete_document_record,
+    delete_extracted_item_record,
+    get_document_record,
+    insert_document_record,
+    insert_extracted_item_record,
+)
 from malipilot.server import has_z_report_signal, should_reroute_receipt_to_z
 
 
@@ -345,6 +353,110 @@ class ParserTests(unittest.TestCase):
             write_workbook(path, {"Sheet1": [{"Tarih": "01.06.2026", "Açıklama": "Test", "Tutar": "10,00"}]})
             rows = read_xlsx(path)
             self.assertEqual(rows[0]["Açıklama"], "Test")
+
+
+class DeleteTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old_values = {
+            "storage_DATA_DIR": storage.DATA_DIR,
+            "storage_UPLOAD_DIR": storage.UPLOAD_DIR,
+            "storage_EXPORT_DIR": storage.EXPORT_DIR,
+            "storage_DB_PATH": storage.DB_PATH,
+            "persistence_SUPABASE_URL": persistence.SUPABASE_URL,
+            "persistence_SUPABASE_SERVICE_ROLE_KEY": persistence.SUPABASE_SERVICE_ROLE_KEY,
+        }
+        root = Path(self.tmp.name)
+        storage.DATA_DIR = root
+        storage.UPLOAD_DIR = root / "uploads"
+        storage.EXPORT_DIR = root / "exports"
+        storage.DB_PATH = root / "malipilot.sqlite3"
+        persistence.SUPABASE_URL = ""
+        persistence.SUPABASE_SERVICE_ROLE_KEY = ""
+
+    def tearDown(self):
+        storage.DATA_DIR = self.old_values["storage_DATA_DIR"]
+        storage.UPLOAD_DIR = self.old_values["storage_UPLOAD_DIR"]
+        storage.EXPORT_DIR = self.old_values["storage_EXPORT_DIR"]
+        storage.DB_PATH = self.old_values["storage_DB_PATH"]
+        persistence.SUPABASE_URL = self.old_values["persistence_SUPABASE_URL"]
+        persistence.SUPABASE_SERVICE_ROLE_KEY = self.old_values["persistence_SUPABASE_SERVICE_ROLE_KEY"]
+        self.tmp.cleanup()
+
+    def test_delete_extracted_item_keeps_original_document(self):
+        doc_id = insert_document_record(1, "2026-06", "receipt", "fis.pdf", str(Path(self.tmp.name) / "fis.pdf"), "done")
+        insert_extracted_item_record("receipt", doc_id, receipt_item(doc_id=doc_id))
+        with storage.connect() as conn:
+            item_id = conn.execute("select id from receipts").fetchone()[0]
+            conn.execute("insert into feedback (item_type, item_id, rating) values ('receipt', ?, 'yanlis')", (item_id,))
+            conn.commit()
+
+        result = delete_extracted_item_record("receipt", item_id, 1)
+
+        with storage.connect() as conn:
+            self.assertEqual(conn.execute("select count(*) from receipts").fetchone()[0], 0)
+            self.assertEqual(conn.execute("select count(*) from feedback").fetchone()[0], 0)
+            self.assertEqual(conn.execute("select count(*) from documents").fetchone()[0], 1)
+        self.assertEqual(result["deleted"], "receipt")
+
+    def test_delete_document_removes_related_rows_feedback_and_file(self):
+        file_path = Path(self.tmp.name) / "z.jpg"
+        file_path.write_bytes(b"test")
+        doc_id = insert_document_record(1, "2026-06", "z", "z.jpg", str(file_path), "done")
+        insert_extracted_item_record("z", doc_id, z_item(doc_id=doc_id))
+        with storage.connect() as conn:
+            item_id = conn.execute("select id from z_reports").fetchone()[0]
+            conn.execute("insert into feedback (item_type, item_id, rating) values ('z', ?, 'yanlis')", (item_id,))
+            conn.execute("insert into extraction_runs (document_id, provider, status) values (?, 'test', 'ok')", (doc_id,))
+            conn.commit()
+
+        result = delete_document_record(doc_id, 1)
+
+        with storage.connect() as conn:
+            self.assertEqual(conn.execute("select count(*) from documents").fetchone()[0], 0)
+            self.assertEqual(conn.execute("select count(*) from z_reports").fetchone()[0], 0)
+            self.assertEqual(conn.execute("select count(*) from feedback").fetchone()[0], 0)
+            self.assertEqual(conn.execute("select count(*) from extraction_runs").fetchone()[0], 0)
+        self.assertIsNone(get_document_record(doc_id, 1))
+        self.assertFalse(file_path.exists())
+        self.assertEqual(result["deleted"], "document")
+
+
+def receipt_item(doc_id: int = 1) -> dict:
+    return {
+        "client_id": 1,
+        "period": "2026-06",
+        "source_file": "fis.pdf",
+        "receipt_date": "2026-06-01",
+        "merchant_name": "MARKET",
+        "vkn_tckn": "1234567890",
+        "document_no": "1",
+        "gross_total": "100.00",
+        "vat_total": "20.00",
+        "payment_method": "kart",
+        "bookkeeping_status": "uygun",
+        "confidence": 0.95,
+        "needs_review": False,
+        "raw_text": "",
+    }
+
+
+def z_item(doc_id: int = 1) -> dict:
+    return {
+        "client_id": 1,
+        "period": "2026-06",
+        "source_file": "z.jpg",
+        "report_date": "2026-06-01",
+        "device_brand": "",
+        "device_serial": "",
+        "z_no": "1",
+        "gross_total": "100.00",
+        "vat_lines": "[]",
+        "payment_breakdown": "{}",
+        "confidence": 0.95,
+        "needs_review": False,
+        "raw_text": "",
+    }
 
 
 if __name__ == "__main__":

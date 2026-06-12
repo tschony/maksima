@@ -869,6 +869,17 @@ button:hover {
   background: var(--blue-soft);
 }
 
+.tiny-button.danger {
+  border-color: rgba(174, 54, 44, 0.35);
+  background: #fff7f6;
+  color: var(--bad);
+}
+
+.tiny-button.danger:hover {
+  border-color: var(--bad);
+  background: #ffe9e6;
+}
+
 .selected-row td {
   background: var(--blue-soft);
 }

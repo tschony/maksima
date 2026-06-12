@@ -20,6 +20,8 @@ from .persistence import (
     create_direct_upload,
     create_feedback_record,
     create_rule_record,
+    delete_document_record,
+    delete_extracted_item_record,
     ensure_ready,
     export_sheets,
     get_account_rules,
@@ -88,6 +90,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response(create_feedback(payload))
             elif parsed.path == "/api/review-item":
                 self.json_response(update_review_item(payload))
+            elif parsed.path == "/api/delete-item":
+                self.json_response(delete_item(payload))
+            elif parsed.path == "/api/delete-document":
+                self.json_response(delete_document(payload))
             else:
                 self.error_json(HTTPStatus.NOT_FOUND, "Sayfa bulunamadı")
         except Exception as exc:
@@ -258,6 +264,23 @@ def update_review_item(payload: dict) -> dict:
         raise ValueError("Geçersiz geri bildirim")
     update_review_item_record(item_type, item_id, updates, rating, note, config)
     return get_review_item({"item_type": [item_type], "id": [str(item_id)]})
+
+
+def delete_item(payload: dict) -> dict:
+    item_type = (payload.get("item_type") or "").strip()
+    item_id = int(payload.get("id") or 0)
+    client_id = int(payload.get("client_id") or 0)
+    if item_type not in {"bank", "z", "receipt"} or not item_id or not client_id:
+        raise ValueError("Silinecek kayıt ve mükellef gerekli")
+    return delete_extracted_item_record(item_type, item_id, client_id)
+
+
+def delete_document(payload: dict) -> dict:
+    document_id = int(payload.get("document_id") or 0)
+    client_id = int(payload.get("client_id") or 0)
+    if not document_id or not client_id:
+        raise ValueError("Silinecek belge ve mükellef gerekli")
+    return delete_document_record(document_id, client_id)
 
 
 def create_client(payload: dict) -> dict:
