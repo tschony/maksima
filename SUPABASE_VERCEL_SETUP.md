@@ -21,6 +21,16 @@ Benötigt wird ein Supabase-Projekt mit:
 - privater Storage Bucket `documents`
 - Service Role Key für den Server
 
+Aktuelles Projekt:
+
+```text
+Projektname: maksima
+Projekt-Ref: ybrombuglnzfkrgwtdec
+Region: eu-central-1
+URL: https://ybrombuglnzfkrgwtdec.supabase.co
+Bucket: documents
+```
+
 Die Tabellen sind:
 
 - `clients`
@@ -36,7 +46,7 @@ Die Tabellen sind:
 In Vercel unter Project Settings -> Environment Variables eintragen:
 
 ```env
-SUPABASE_URL=https://...
+SUPABASE_URL=https://ybrombuglnzfkrgwtdec.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=...
 SUPABASE_STORAGE_BUCKET=documents
 GEMINI_API_KEY=...
@@ -46,6 +56,14 @@ MALIYARDIMCI_GEMINI_MODEL=gemini-3.5-flash
 Alle Variablen für `Production and Preview` setzen.
 
 `SUPABASE_SERVICE_ROLE_KEY` und `GEMINI_API_KEY` müssen geheim bleiben. Sie gehören nie in GitHub, Screenshots oder Frontend-Code.
+
+Den `SUPABASE_SERVICE_ROLE_KEY` findest du in Supabase unter:
+
+```text
+Project Settings -> API -> Project API keys -> service_role
+```
+
+Der Supabase-Connector zeigt aus Sicherheitsgründen nur publishable/anon keys, nicht den service_role key.
 
 ## Lokale Entwicklung
 
@@ -70,4 +88,3 @@ python3 -m malipilot.server
 - Ein hochgeladener Fiş bleibt nach Refresh erhalten.
 - Die Review Queue bleibt nach Refresh erhalten.
 - Supabase Storage enthält die hochgeladene Datei.
-
