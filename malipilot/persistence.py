@@ -7,10 +7,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from calendar import monthrange
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
 from . import env as _env
+from .parsers import parse_decimal
 from .storage import EXPORT_DIR, UPLOAD_DIR, account_rules as sqlite_account_rules, connect, insert_document as sqlite_insert_document, row, rows
 
 
@@ -320,6 +323,76 @@ def create_feedback_record(item_type: str, item_id: int, rating: str, note: str)
         return row(conn, "select * from feedback where id = ?", (cur.lastrowid,))
 
 
+def list_z_devices(client_id: int | None = None) -> list[dict[str, Any]]:
+    if using_supabase():
+        params = {"select": "*", "order": "name.asc,id.asc"}
+        if client_id:
+            params["client_id"] = f"eq.{client_id}"
+        try:
+            return client().select("z_devices", params)
+        except RuntimeError:
+            return []
+    query = "select * from z_devices"
+    args: tuple[Any, ...] = ()
+    if client_id:
+        query += " where client_id = ?"
+        args = (client_id,)
+    query += " order by name, id"
+    with connect() as conn:
+        return rows(conn, query, args)
+
+
+def create_z_device_record(client_id: int, name: str, brand: str = "", serial: str = "") -> dict[str, Any]:
+    payload = {
+        "client_id": client_id,
+        "name": name.strip(),
+        "brand": brand.strip(),
+        "serial": serial.strip(),
+        "active": True,
+    }
+    if not payload["client_id"] or not payload["name"]:
+        raise ValueError("Kasa adı ve mükellef gerekli")
+    if using_supabase():
+        return client().insert("z_devices", payload)
+    with connect() as conn:
+        cur = conn.execute(
+            "insert into z_devices (client_id, name, brand, serial, active) values (?, ?, ?, ?, 1)",
+            (payload["client_id"], payload["name"], payload["brand"], payload["serial"]),
+        )
+        conn.commit()
+        return row(conn, "select * from z_devices where id = ?", (cur.lastrowid,))
+
+
+def find_or_create_z_device(client_id: int, brand: str, serial: str) -> dict[str, Any]:
+    brand = clean_text(brand)
+    serial = clean_text(serial)
+    if using_supabase():
+        supabase = client()
+        if serial:
+            existing = supabase.single("z_devices", {"select": "*", "client_id": f"eq.{client_id}", "serial": f"eq.{serial}"})
+            if existing:
+                return existing
+        if not serial and brand:
+            existing = supabase.single("z_devices", {"select": "*", "client_id": f"eq.{client_id}", "brand": f"eq.{brand}", "serial": "eq."})
+            if existing:
+                return existing
+    else:
+        with connect() as conn:
+            if serial:
+                existing = row(conn, "select * from z_devices where client_id = ? and serial = ? order by id limit 1", (client_id, serial))
+                if existing:
+                    return existing
+            if not serial and brand:
+                existing = row(conn, "select * from z_devices where client_id = ? and brand = ? and coalesce(serial, '') = '' order by id limit 1", (client_id, brand))
+                if existing:
+                    return existing
+
+    label = " ".join(part for part in [brand or "Kasa", serial] if part).strip()
+    if not label:
+        label = "Belirsiz kasa"
+    return create_z_device_record(client_id, label, brand, serial)
+
+
 def store_upload(content: bytes, client_id: int, period: str, module: str, filename: str) -> tuple[Path, str]:
     folder = UPLOAD_DIR / str(client_id) / period / module
     folder.mkdir(parents=True, exist_ok=True)
@@ -505,11 +578,207 @@ def insert_bank_transaction(document_id: int, item: dict[str, Any]) -> None:
         conn.commit()
 
 
+def prepare_z_report_item(document_id: int, item: dict[str, Any]) -> dict[str, Any]:
+    prepared = dict(item)
+    client_id = int(prepared["client_id"])
+    brand = clean_text(prepared.get("device_brand"))
+    serial = clean_text(prepared.get("device_serial"))
+    device = find_or_create_z_device(client_id, brand, serial)
+    prepared["device_id"] = int(device["id"])
+    prepared["device_brand"] = brand or clean_text(device.get("brand"))
+    prepared["device_serial"] = serial or clean_text(device.get("serial"))
+
+    document = get_document_record(document_id)
+    selected_period = str(document.get("period") or prepared.get("period") or "") if document else str(prepared.get("period") or "")
+    warnings = z_validation_warnings(prepared, selected_period)
+    duplicate = z_report_duplicate_exists(prepared)
+    if duplicate:
+        warnings.append("Aynı Z raporu daha önce kaydedilmiş olabilir.")
+    prepared["duplicate_flag"] = duplicate
+    prepared["validation_warnings"] = json.dumps(unique_texts(warnings), ensure_ascii=False)
+    prepared["needs_review"] = bool(prepared.get("needs_review")) or duplicate or bool(warnings)
+    return prepared
+
+
+def z_report_duplicate_exists(item: dict[str, Any]) -> bool:
+    client_id = int(item.get("client_id") or 0)
+    report_date = clean_text(item.get("report_date"))
+    z_no = clean_text(item.get("z_no"))
+    gross_total = clean_text(item.get("gross_total"))
+    device_id = item.get("device_id")
+    if not client_id or not report_date or not z_no:
+        return False
+    if using_supabase():
+        params = {
+            "select": "id",
+            "client_id": f"eq.{client_id}",
+            "report_date": f"eq.{report_date}",
+            "z_no": f"eq.{z_no}",
+            "gross_total": f"eq.{gross_total}",
+            "limit": "1",
+        }
+        if device_id:
+            params["device_id"] = f"eq.{device_id}"
+        return bool(client().select("z_reports", params))
+    with connect() as conn:
+        if device_id:
+            found = row(
+                conn,
+                "select id from z_reports where client_id = ? and device_id = ? and report_date = ? and z_no = ? and gross_total = ? limit 1",
+                (client_id, device_id, report_date, z_no, gross_total),
+            )
+        else:
+            found = row(
+                conn,
+                "select id from z_reports where client_id = ? and report_date = ? and z_no = ? and gross_total = ? limit 1",
+                (client_id, report_date, z_no, gross_total),
+            )
+    return bool(found)
+
+
+def z_validation_warnings(item: dict[str, Any], selected_period: str) -> list[str]:
+    warnings: list[str] = []
+    report_date = clean_text(item.get("report_date"))
+    z_no = clean_text(item.get("z_no"))
+    gross_total = clean_text(item.get("gross_total"))
+    vat_lines = clean_text(item.get("vat_lines"))
+    payment_breakdown = clean_text(item.get("payment_breakdown"))
+    if not report_date:
+        warnings.append("Z tarihi eksik.")
+    if not z_no:
+        warnings.append("Z no eksik.")
+    if not gross_total:
+        warnings.append("Günlük toplam tutar eksik.")
+    if not vat_lines or vat_lines in {"[]", "{}"}:
+        warnings.append("KDV satırları eksik.")
+    gross = decimal_or_none(gross_total)
+    vat_sum = vat_total_from_json(vat_lines)
+    if gross is not None and vat_sum is not None and vat_sum > gross:
+        warnings.append("KDV toplamı satış toplamından büyük görünüyor.")
+    vat_rates = vat_rates_from_json(vat_lines)
+    if gross is not None and vat_sum is not None and vat_rates == {"20"}:
+        expected_20 = (gross * Decimal("20") / Decimal("120")).quantize(Decimal("0.01"))
+        if abs(vat_sum - expected_20) > Decimal("0.10"):
+            warnings.append("KDV toplamı %20 dahil brüt tutarla uyuşmuyor; kontrol gerekli.")
+
+    payment_sum = payment_total_from_json(payment_breakdown)
+    if gross is not None and payment_sum is not None and abs(payment_sum - gross) > Decimal("0.10"):
+        warnings.append("Ödeme kırılımı toplam satış tutarıyla uyuşmuyor.")
+    if not clean_text(item.get("device_serial")):
+        warnings.append("Cihaz seri no okunamadı; kasa eşleşmesi kontrol edilmeli.")
+    return unique_texts(warnings)
+
+
+def vat_total_from_json(value: str) -> Decimal | None:
+    try:
+        parsed = json.loads(value or "[]")
+    except json.JSONDecodeError:
+        return None
+    total = sum_decimal_node(parsed, keys={"amount", "kdv", "vat", "tax"})
+    return total if total != Decimal("0") else None
+
+
+def vat_rates_from_json(value: str) -> set[str]:
+    try:
+        parsed = json.loads(value or "[]")
+    except json.JSONDecodeError:
+        return set()
+    rates: set[str] = set()
+    if isinstance(parsed, list):
+        for item in parsed:
+            if isinstance(item, dict):
+                rate = clean_text(item.get("rate")).replace("%", "")
+                if rate:
+                    rates.add(rate)
+    return rates
+
+
+def payment_total_from_json(value: str) -> Decimal | None:
+    try:
+        parsed = json.loads(value or "{}")
+    except json.JSONDecodeError:
+        return None
+    total = sum_decimal_node(parsed, keys={"cash", "card", "pos", "nakit", "kart"})
+    return total if total != Decimal("0") else None
+
+
+def sum_decimal_node(node: Any, keys: set[str]) -> Decimal:
+    total = Decimal("0")
+    if isinstance(node, list):
+        for item in node:
+            total += sum_decimal_node(item, keys)
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            lowered = str(key).lower()
+            if any(token in lowered for token in keys):
+                total += decimal_or_none(value) or Decimal("0")
+            elif isinstance(value, (dict, list)):
+                total += sum_decimal_node(value, keys)
+    return total
+
+
+def decimal_or_none(value: Any) -> Decimal | None:
+    text = clean_text(value)
+    if not text:
+        return None
+    try:
+        return parse_decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def day_from_date(value: Any) -> int | None:
+    text = clean_text(value)
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        try:
+            return int(text[8:10])
+        except ValueError:
+            return None
+    return None
+
+
+def truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).lower() in {"1", "true", "yes", "on"}
+
+
+def json_list(value: Any) -> list[Any]:
+    try:
+        parsed = json.loads(value or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def money_text(value: Decimal) -> str:
+    return format(value.quantize(Decimal("0.01")), "f")
+
+
+def clean_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def unique_texts(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = clean_text(value)
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return result
+
+
 def insert_extracted_item_record(module: str, document_id: int, item: dict[str, Any]) -> None:
     if module == "z":
+        item = prepare_z_report_item(document_id, item)
         payload = {
             "document_id": document_id,
             "client_id": item["client_id"],
+            "device_id": item.get("device_id"),
             "period": item["period"],
             "source_file": item["source_file"],
             "report_date": item["report_date"],
@@ -519,6 +788,10 @@ def insert_extracted_item_record(module: str, document_id: int, item: dict[str, 
             "gross_total": item["gross_total"],
             "vat_lines": item["vat_lines"],
             "payment_breakdown": item["payment_breakdown"],
+            "cumulative_total": item.get("cumulative_total", ""),
+            "cumulative_vat": item.get("cumulative_vat", ""),
+            "duplicate_flag": bool(item.get("duplicate_flag")),
+            "validation_warnings": item.get("validation_warnings", "[]"),
             "confidence": item["confidence"],
             "needs_review": bool(item["needs_review"]),
             "raw_text": item["raw_text"],
@@ -526,13 +799,15 @@ def insert_extracted_item_record(module: str, document_id: int, item: dict[str, 
         table = "z_reports"
         sqlite_sql = """
             insert into z_reports
-            (document_id, client_id, period, source_file, report_date, device_brand, device_serial, z_no, gross_total,
-             vat_lines, payment_breakdown, confidence, needs_review, raw_text)
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (document_id, client_id, device_id, period, source_file, report_date, device_brand, device_serial, z_no, gross_total,
+             vat_lines, payment_breakdown, cumulative_total, cumulative_vat, duplicate_flag, validation_warnings,
+             confidence, needs_review, raw_text)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         sqlite_args = (
             document_id,
             payload["client_id"],
+            payload["device_id"],
             payload["period"],
             payload["source_file"],
             payload["report_date"],
@@ -542,6 +817,10 @@ def insert_extracted_item_record(module: str, document_id: int, item: dict[str, 
             payload["gross_total"],
             payload["vat_lines"],
             payload["payment_breakdown"],
+            payload["cumulative_total"],
+            payload["cumulative_vat"],
+            int(payload["duplicate_flag"]),
+            payload["validation_warnings"],
             payload["confidence"],
             int(payload["needs_review"]),
             payload["raw_text"],
@@ -610,6 +889,7 @@ def api_state_payload(ai_info: dict[str, str]) -> dict[str, Any]:
         "recent_documents": recent_documents(),
         "bank_rows": list_rows("bank_transactions", "id.desc", 500),
         "z_reports": list_rows("z_reports", "id.desc", 300),
+        "z_devices": list_z_devices(),
         "receipts": list_rows("receipts", "id.asc", 500),
         "review_items": review_needed(),
         "ai": ai_info,
@@ -636,6 +916,146 @@ def list_rows(table: str, order: str, limit: int) -> list[dict[str, Any]]:
         return client().select(table, {"select": "*", "order": order, "limit": str(limit)})
     with connect() as conn:
         return rows(conn, f"select * from {table} order by {order.replace('.', ' ')} limit ?", (limit,))
+
+
+def z_month_overview(client_id: int, period: str) -> dict[str, Any]:
+    devices = list_z_devices(client_id)
+    reports = z_reports_for_period(client_id, period)
+    days = days_in_period(period)
+    device_map: dict[str, dict[str, Any]] = {}
+    for device in devices:
+        key = str(device["id"])
+        device_map[key] = {
+            "device": device,
+            "rows": [],
+            "days": [],
+            "missing_days": [],
+            "duplicate_count": 0,
+            "review_count": 0,
+            "warning_count": 0,
+            "gross_total": Decimal("0"),
+            "vat_total": Decimal("0"),
+        }
+    for report in reports:
+        key = str(report.get("device_id") or f"unassigned:{report.get('device_serial') or report.get('device_brand') or 'unknown'}")
+        if key not in device_map:
+            device_map[key] = {
+                "device": {
+                    "id": report.get("device_id") or "",
+                    "client_id": client_id,
+                    "name": report.get("device_serial") or report.get("device_brand") or "Belirsiz kasa",
+                    "brand": report.get("device_brand") or "",
+                    "serial": report.get("device_serial") or "",
+                    "active": True,
+                },
+                "rows": [],
+                "days": [],
+                "missing_days": [],
+                "duplicate_count": 0,
+                "review_count": 0,
+                "warning_count": 0,
+                "gross_total": Decimal("0"),
+                "vat_total": Decimal("0"),
+            }
+        bucket = device_map[key]
+        bucket["rows"].append(report)
+        bucket["gross_total"] += decimal_or_none(report.get("gross_total")) or Decimal("0")
+        bucket["vat_total"] += vat_total_from_json(report.get("vat_lines") or "") or Decimal("0")
+        if truthy(report.get("duplicate_flag")):
+            bucket["duplicate_count"] += 1
+        if truthy(report.get("needs_review")):
+            bucket["review_count"] += 1
+        if json_list(report.get("validation_warnings")):
+            bucket["warning_count"] += 1
+
+    expected_total = 0
+    received_total = 0
+    missing_total = 0
+    duplicate_total = 0
+    review_total = 0
+    gross_total = Decimal("0")
+    vat_total = Decimal("0")
+    device_summaries: list[dict[str, Any]] = []
+    missing_rows: list[dict[str, Any]] = []
+    for bucket in device_map.values():
+        by_day: dict[int, list[dict[str, Any]]] = {}
+        for report in bucket["rows"]:
+            day = day_from_date(report.get("report_date"))
+            if day:
+                by_day.setdefault(day, []).append(report)
+        day_rows = []
+        for day in range(1, days + 1):
+            day_reports = by_day.get(day, [])
+            if not day_reports:
+                status = "eksik"
+                bucket["missing_days"].append(day)
+                missing_rows.append({"device": bucket["device"]["name"], "date": f"{period}-{day:02d}", "status": status})
+            elif len(day_reports) > 1:
+                status = "mukerrer"
+            elif any(truthy(report.get("needs_review")) for report in day_reports):
+                status = "kontrol"
+            else:
+                status = "tamam"
+            day_rows.append(
+                {
+                    "day": day,
+                    "date": f"{period}-{day:02d}",
+                    "status": status,
+                    "count": len(day_reports),
+                    "z_nos": ", ".join(clean_text(report.get("z_no")) for report in day_reports if clean_text(report.get("z_no"))),
+                    "gross_total": money_text(sum((decimal_or_none(report.get("gross_total")) or Decimal("0") for report in day_reports), Decimal("0"))),
+                    "vat_total": money_text(sum((vat_total_from_json(report.get("vat_lines") or "") or Decimal("0") for report in day_reports), Decimal("0"))),
+                }
+            )
+        expected_total += days
+        received_total += len({day for day in by_day if day})
+        missing_total += len(bucket["missing_days"])
+        duplicate_total += int(bucket["duplicate_count"])
+        review_total += int(bucket["review_count"])
+        gross_total += bucket["gross_total"]
+        vat_total += bucket["vat_total"]
+        device_summaries.append(
+            {
+                "device": bucket["device"],
+                "expected_days": days,
+                "received_days": len({day for day in by_day if day}),
+                "missing_days": bucket["missing_days"],
+                "duplicate_count": bucket["duplicate_count"],
+                "review_count": bucket["review_count"],
+                "warning_count": bucket["warning_count"],
+                "gross_total": money_text(bucket["gross_total"]),
+                "vat_total": money_text(bucket["vat_total"]),
+                "days": day_rows,
+            }
+        )
+    return {
+        "client_id": client_id,
+        "period": period,
+        "expected_reports": expected_total,
+        "received_days": received_total,
+        "missing_days": missing_total,
+        "duplicate_count": duplicate_total,
+        "review_count": review_total,
+        "gross_total": money_text(gross_total),
+        "vat_total": money_text(vat_total),
+        "devices": device_summaries,
+        "missing_rows": missing_rows,
+    }
+
+
+def z_reports_for_period(client_id: int, period: str) -> list[dict[str, Any]]:
+    if using_supabase():
+        return client().select("z_reports", {"select": "*", "client_id": f"eq.{client_id}", "period": f"eq.{period}", "order": "report_date.asc,id.asc"})
+    with connect() as conn:
+        return rows(conn, "select * from z_reports where client_id = ? and period = ? order by report_date, id", (client_id, period))
+
+
+def days_in_period(period: str) -> int:
+    try:
+        year, month = [int(part) for part in period.split("-", 1)]
+        return monthrange(year, month)[1]
+    except Exception:
+        return 31
 
 
 def get_review_item_record(item_type: str, item_id: int, config: dict[str, Any]) -> dict[str, Any]:
@@ -738,12 +1158,16 @@ def export_sheets(client_id: int, period: str) -> tuple[dict[str, Any] | None, d
     client_row = get_client(client_id)
     if not client_row:
         return None, {}
+    z_overview = z_month_overview(client_id, period)
     if using_supabase():
         supabase = client()
         filters = {"client_id": f"eq.{client_id}", "period": f"eq.{period}"}
         sheets = {
             "Banka_Hareketleri": supabase.select("bank_transactions", {"select": "*", **filters, "order": "date.asc,id.asc"}),
             "Z_Raporlari": supabase.select("z_reports", {"select": "*", **filters, "order": "report_date.asc,id.asc"}),
+            "Z_Aylik_Ozet": z_overview_rows(z_overview),
+            "Z_Eksik_Gunler": z_overview["missing_rows"],
+            "Z_Cihazlar": z_device_export_rows(z_overview),
             "Fisler": supabase.select("receipts", {"select": "*", **filters, "order": "receipt_date.asc,id.asc"}),
             "Kontrol_Gerekenler": review_needed(client_id, period),
             "Ogrenilen_Kurallar": supabase.select("account_code_rules", {"select": "*", "or": f"(client_id.is.null,client_id.eq.{client_id})", "order": "id.asc"}),
@@ -755,11 +1179,52 @@ def export_sheets(client_id: int, period: str) -> tuple[dict[str, Any] | None, d
         sheets = {
             "Banka_Hareketleri": rows(conn, f"select * from bank_transactions where {where} order by date, id", args),
             "Z_Raporlari": rows(conn, f"select * from z_reports where {where} order by report_date, id", args),
+            "Z_Aylik_Ozet": z_overview_rows(z_overview),
+            "Z_Eksik_Gunler": z_overview["missing_rows"],
+            "Z_Cihazlar": z_device_export_rows(z_overview),
             "Fisler": rows(conn, f"select * from receipts where {where} order by receipt_date, id", args),
             "Kontrol_Gerekenler": review_needed(client_id, period),
             "Ogrenilen_Kurallar": rows(conn, "select * from account_code_rules where client_id is null or client_id = ? order by id", (client_id,)),
         }
-    return client_row, sheets
+        return client_row, sheets
+
+
+def z_overview_rows(overview: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "period": overview["period"],
+            "expected_reports": overview["expected_reports"],
+            "received_days": overview["received_days"],
+            "missing_days": overview["missing_days"],
+            "duplicate_count": overview["duplicate_count"],
+            "review_count": overview["review_count"],
+            "gross_total": overview["gross_total"],
+            "vat_total": overview["vat_total"],
+        }
+    ]
+
+
+def z_device_export_rows(overview: dict[str, Any]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for entry in overview["devices"]:
+        device = entry["device"]
+        result.append(
+            {
+                "device_id": device.get("id", ""),
+                "name": device.get("name", ""),
+                "brand": device.get("brand", ""),
+                "serial": device.get("serial", ""),
+                "expected_days": entry["expected_days"],
+                "received_days": entry["received_days"],
+                "missing_days": ", ".join(str(day) for day in entry["missing_days"]),
+                "duplicate_count": entry["duplicate_count"],
+                "review_count": entry["review_count"],
+                "warning_count": entry["warning_count"],
+                "gross_total": entry["gross_total"],
+                "vat_total": entry["vat_total"],
+            }
+        )
+    return result
 
 
 def unique_path(path: Path) -> Path:

@@ -139,10 +139,62 @@ def extract_z_report(raw_text: str, client_id: int, period: str, source_file: st
         "gross_total": total or "",
         "vat_lines": json.dumps(vat_lines, ensure_ascii=False),
         "payment_breakdown": json.dumps(payments, ensure_ascii=False),
+        "cumulative_total": z_report_cumulative_total(text) or "",
+        "cumulative_vat": z_report_cumulative_vat(text) or "",
         "confidence": round(min(confidence, 0.95), 2),
         "needs_review": confidence < 0.75 or not z_no,
         "raw_text": raw_text,
     }
+
+
+def extract_z_reports(raw_text: str, client_id: int, period: str, source_file: str) -> list[dict[str, Any]]:
+    text = normalize_ocr_text(raw_text)
+    z_no_matches = list(re.finditer(r"\bZ\s*NO\s*[:\-]?\s*([0-9]{2,})\b", raw_text, re.I))
+    if len(z_no_matches) > 1:
+        return segment_z_reports_by_end_marker(raw_text, z_no_matches, client_id, period, source_file, text)
+    z_matches = list(re.finditer(r"\bZ\s*(?:NO|SAYA[ÇC])\s*[:\-]?\s*([0-9]{2,})\b", raw_text, re.I))
+    if len(z_matches) <= 1:
+        return [extract_z_report(raw_text, client_id, period, source_file)]
+
+    results: list[dict[str, Any]] = []
+    base_date = parse_ocr_date(text) or ""
+    for index, match in enumerate(z_matches):
+        start = 0 if index == 0 else z_matches[index - 1].end()
+        next_start = z_matches[index + 1].start() if index + 1 < len(z_matches) else len(raw_text)
+        segment = raw_text[start:next_start].strip()
+        item = extract_z_report(segment, client_id, period, f"{source_file} #{index + 1}")
+        item["z_no"] = match.group(1).strip()
+        if not item["report_date"] and base_date:
+            item["report_date"] = base_date
+            item["period"] = base_date[:7]
+        results.append(item)
+    return results
+
+
+def segment_z_reports_by_end_marker(
+    raw_text: str,
+    z_no_matches: list[re.Match[str]],
+    client_id: int,
+    period: str,
+    source_file: str,
+    normalized_text: str,
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    base_date = parse_ocr_date(normalized_text) or ""
+    start = 0
+    for index, match in enumerate(z_no_matches):
+        segment = raw_text[start : match.end()].strip()
+        start = match.end()
+        item = extract_z_report(segment, client_id, period, f"{source_file} #{index + 1}")
+        item["z_no"] = match.group(1).strip()
+        if not item["report_date"] and base_date:
+            item["report_date"] = base_date
+            item["period"] = base_date[:7]
+        results.append(item)
+    trailing = raw_text[start:].strip()
+    if trailing and is_z_report_text(normalize_ocr_text(trailing)):
+        results.append(extract_z_report(trailing, client_id, period, f"{source_file} #{len(results) + 1}"))
+    return results
 
 
 def extract_receipt(raw_text: str, client_id: int, period: str, source_file: str) -> dict[str, Any]:
@@ -291,6 +343,8 @@ def z_report_total(text: str) -> str | None:
     for candidate in reversed(candidates):
         if candidate > 0:
             return format(candidate, "f")
+    if candidates:
+        return format(candidates[-1], "f")
     return first_amount_after(text, ["GENEL TOPLAM", "TOPLAM", "TOTAL", "SATIS", "SATIŞ"])
 
 
@@ -307,6 +361,26 @@ def z_report_vat_total(text: str) -> str | None:
     for candidate in reversed(candidates):
         if candidate > 0:
             return format(candidate, "f")
+    if candidates:
+        return format(candidates[-1], "f")
+    return None
+
+
+def z_report_cumulative_total(text: str) -> str | None:
+    return first_labeled_amount(text, ["KÜM TOP", "KUM TOP"])
+
+
+def z_report_cumulative_vat(text: str) -> str | None:
+    return first_labeled_amount(text, ["KÜM KDV", "KUM KDV"])
+
+
+def first_labeled_amount(text: str, labels: list[str]) -> str | None:
+    for label in labels:
+        pattern = rf"{re.escape(label)}[^0-9\-]*([0-9][0-9\.,]*)"
+        match = re.search(pattern, text, re.I)
+        if match:
+            amount = parse_ocr_amount(match.group(1))
+            return "" if amount is None else format(amount, "f")
     return None
 
 

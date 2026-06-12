@@ -14,11 +14,19 @@ EXPORT_DIR = DATA_DIR / "exports"
 DB_PATH = DATA_DIR / "malipilot.sqlite3"
 
 
+class ClosingConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        try:
+            return bool(super().__exit__(exc_type, exc_value, traceback))
+        finally:
+            self.close()
+
+
 def connect() -> sqlite3.Connection:
     DATA_DIR.mkdir(exist_ok=True)
     UPLOAD_DIR.mkdir(exist_ok=True)
     EXPORT_DIR.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, factory=ClosingConnection)
     conn.row_factory = sqlite3.Row
     init_db(conn)
     return conn
@@ -70,6 +78,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             id integer primary key autoincrement,
             document_id integer not null,
             client_id integer not null,
+            device_id integer,
             period text not null,
             source_file text,
             report_date text,
@@ -79,9 +88,22 @@ def init_db(conn: sqlite3.Connection) -> None:
             gross_total text,
             vat_lines text,
             payment_breakdown text,
+            cumulative_total text,
+            cumulative_vat text,
+            duplicate_flag integer default 0,
+            validation_warnings text default '[]',
             confidence real,
             needs_review integer default 0,
             raw_text text,
+            created_at text default current_timestamp
+        );
+        create table if not exists z_devices (
+            id integer primary key autoincrement,
+            client_id integer not null,
+            name text not null,
+            brand text,
+            serial text,
+            active integer default 1,
             created_at text default current_timestamp
         );
         create table if not exists receipts (
@@ -137,7 +159,25 @@ def init_db(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    ensure_columns(
+        conn,
+        "z_reports",
+        {
+            "device_id": "integer",
+            "cumulative_total": "text",
+            "cumulative_vat": "text",
+            "duplicate_flag": "integer default 0",
+            "validation_warnings": "text default '[]'",
+        },
+    )
     conn.commit()
+
+
+def ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    existing = {item["name"] for item in conn.execute(f"pragma table_info({table})").fetchall()}
+    for name, definition in columns.items():
+        if name not in existing:
+            conn.execute(f"alter table {table} add column {name} {definition}")
 
 
 def rows(conn: sqlite3.Connection, query: str, args: tuple[Any, ...] = ()) -> list[dict[str, Any]]:

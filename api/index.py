@@ -13,6 +13,7 @@ from malipilot.server import (
     create_client,
     create_feedback,
     create_rule,
+    create_z_device,
     delete_document,
     delete_item,
     get_review_item,
@@ -74,6 +75,8 @@ def handle_post(path: str, payload: dict):
         return json_payload(handle_stored_upload(payload))
     if path == "/api/rules":
         return json_payload(create_rule(payload))
+    if path == "/api/z-devices":
+        return json_payload(create_z_device(payload))
     if path == "/api/feedback":
         return json_payload(create_feedback(payload))
     if path == "/api/review-item":

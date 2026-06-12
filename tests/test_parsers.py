@@ -23,15 +23,18 @@ from malipilot.ai_extractor import (
     should_use_file_api,
     unwrap_gemini_file_response,
 )
-from malipilot.ocr import extract_receipt, extract_z_report
+from malipilot.ocr import extract_receipt, extract_z_report, extract_z_reports
 from malipilot.parsers import parse_bank_file, parse_decimal, read_xlsx
 from malipilot import persistence, storage
 from malipilot.persistence import (
+    create_client_record,
     delete_document_record,
     delete_extracted_item_record,
+    export_sheets,
     get_document_record,
     insert_document_record,
     insert_extracted_item_record,
+    z_month_overview,
 )
 from malipilot.server import has_z_report_signal, should_reroute_receipt_to_z
 
@@ -97,6 +100,37 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(item["z_no"], "0674")
         self.assertEqual(item["gross_total"], "3255.00")
         self.assertEqual(vat_lines[-1], {"rate": "20", "amount": "542.50"})
+
+    def test_z_report_extraction_splits_multiple_z_reports_on_one_slip(self):
+        raw = (
+            "Z GÜNLÜK RAPORU\n"
+            "TARIH: 04/05/26\n"
+            "Z SAYAC 673\n"
+            "MALI VERI\n"
+            "TOP *0,00\n"
+            "KDV *0,00\n"
+            "KÜM TOP *4.670.639,68\n"
+            "KÜM KDV *368.516,78\n"
+            "EKÜ NO:0001 Z NO:0673\n"
+            "VERGI DOKUMU\n"
+            "%20 TOPLAM *3.255,00\n"
+            "KDV *542,50\n"
+            "MALI VERI\n"
+            "TOP *3.255,00\n"
+            "KDV *542,50\n"
+            "KÜM TOP *4.673.894,68\n"
+            "KÜM KDV *369.059,28\n"
+            "EKÜ NO:0001 Z NO:0674\n"
+        )
+        items = extract_z_reports(raw, client_id=1, period="2026-06", source_file="z-long.jpg")
+
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0]["z_no"], "0673")
+        self.assertEqual(items[0]["gross_total"], "0.00")
+        self.assertEqual(items[0]["cumulative_total"], "4670639.68")
+        self.assertEqual(items[1]["z_no"], "0674")
+        self.assertEqual(items[1]["gross_total"], "3255.00")
+        self.assertEqual(items[1]["cumulative_vat"], "369059.28")
 
     def test_receipt_extraction_marks_z_report_as_not_customer_receipt(self):
         raw = "Z GÜNLÜK RAPORU\nTARIH: 04/05/26\nZ SAYAC 674\nTOP *3.255,00\nKDV *542,50\n"
@@ -457,6 +491,60 @@ class DeleteTests(unittest.TestCase):
             self.assertEqual(conn.execute("select count(*) from z_reports").fetchone()[0], 0)
         self.assertFalse(file_path.exists())
 
+    def test_vercel_z_device_route_creates_device(self):
+        from api.index import handle_post
+
+        status, _, body = handle_post("/api/z-devices", {"client_id": 1, "name": "Kasa 1", "brand": "BEKO", "serial": "SER123"})
+        payload = json.loads(body.decode("utf-8"))
+
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertEqual(payload["name"], "Kasa 1")
+        with storage.connect() as conn:
+            self.assertEqual(conn.execute("select count(*) from z_devices where serial = 'SER123'").fetchone()[0], 1)
+
+    def test_z_report_insert_creates_device_and_marks_duplicate(self):
+        first_doc = insert_document_record(1, "2026-06", "z", "z-1.jpg", str(Path(self.tmp.name) / "z-1.jpg"), "done")
+        second_doc = insert_document_record(1, "2026-06", "z", "z-2.jpg", str(Path(self.tmp.name) / "z-2.jpg"), "done")
+
+        insert_extracted_item_record("z", first_doc, z_item(doc_id=first_doc))
+        insert_extracted_item_record("z", second_doc, z_item(doc_id=second_doc))
+
+        with storage.connect() as conn:
+            devices = conn.execute("select name, serial from z_devices").fetchall()
+            reports = conn.execute("select duplicate_flag, needs_review, validation_warnings from z_reports order by id").fetchall()
+
+        self.assertEqual(len(devices), 1)
+        self.assertEqual(devices[0][1], "BCJ0001")
+        self.assertEqual(reports[0][0], 0)
+        self.assertEqual(reports[1][0], 1)
+        self.assertEqual(reports[1][1], 1)
+        self.assertIn("daha önce", reports[1][2])
+
+    def test_z_month_overview_finds_missing_days_per_device(self):
+        doc_id = insert_document_record(1, "2026-06", "z", "z.jpg", str(Path(self.tmp.name) / "z.jpg"), "done")
+        insert_extracted_item_record("z", doc_id, z_item(doc_id=doc_id))
+
+        overview = z_month_overview(1, "2026-06")
+
+        self.assertEqual(overview["expected_reports"], 30)
+        self.assertEqual(overview["received_days"], 1)
+        self.assertEqual(overview["missing_days"], 29)
+        self.assertEqual(overview["gross_total"], "120.00")
+        self.assertEqual(overview["vat_total"], "20.00")
+        self.assertEqual(overview["devices"][0]["missing_days"][0], 2)
+
+    def test_export_contains_z_month_sheets(self):
+        create_client_record("TEST FIRMA", "TEST")
+        doc_id = insert_document_record(1, "2026-06", "z", "z.jpg", str(Path(self.tmp.name) / "z.jpg"), "done")
+        insert_extracted_item_record("z", doc_id, z_item(doc_id=doc_id))
+
+        _, sheets = export_sheets(1, "2026-06")
+
+        self.assertIn("Z_Aylik_Ozet", sheets)
+        self.assertIn("Z_Eksik_Gunler", sheets)
+        self.assertIn("Z_Cihazlar", sheets)
+        self.assertEqual(sheets["Z_Aylik_Ozet"][0]["expected_reports"], 30)
+
 
 def receipt_item(doc_id: int = 1) -> dict:
     return {
@@ -483,12 +571,14 @@ def z_item(doc_id: int = 1) -> dict:
         "period": "2026-06",
         "source_file": "z.jpg",
         "report_date": "2026-06-01",
-        "device_brand": "",
-        "device_serial": "",
+        "device_brand": "BEKO",
+        "device_serial": "BCJ0001",
         "z_no": "1",
-        "gross_total": "100.00",
-        "vat_lines": "[]",
-        "payment_breakdown": "{}",
+        "gross_total": "120.00",
+        "vat_lines": json.dumps([{"rate": "20", "amount": "20.00"}]),
+        "payment_breakdown": json.dumps({"card": "120.00"}),
+        "cumulative_total": "1000.00",
+        "cumulative_vat": "166.67",
         "confidence": 0.95,
         "needs_review": False,
         "raw_text": "",

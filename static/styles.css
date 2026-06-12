@@ -693,6 +693,190 @@ button:hover {
   font-weight: 800;
 }
 
+.z-month-panel {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.z-month-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(420px, 640px);
+  gap: 16px;
+  align-items: start;
+}
+
+.z-month-head h3 {
+  margin: 0;
+  color: var(--blue-deep);
+  font-size: 28px;
+  line-height: 1.05;
+  font-weight: 900;
+}
+
+.z-month-head p {
+  max-width: 620px;
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.45;
+  font-weight: 650;
+}
+
+.z-device-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.z-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.z-kpi {
+  min-height: 72px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.z-kpi span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.2;
+  font-weight: 850;
+}
+
+.z-kpi strong {
+  display: block;
+  margin-top: 8px;
+  color: var(--blue-deep);
+  font-size: 19px;
+  line-height: 1;
+  font-weight: 900;
+}
+
+.z-device-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.z-device-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbff;
+}
+
+.z-device-card span {
+  display: block;
+  color: var(--cyan);
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.z-device-card strong {
+  display: block;
+  margin-top: 6px;
+  color: var(--ink);
+  font-size: 20px;
+  line-height: 1.1;
+  font-weight: 900;
+}
+
+.z-device-card small,
+.z-device-card p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  font-weight: 750;
+}
+
+.z-device-card p {
+  margin: 0;
+}
+
+.z-device-card dl {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.z-device-card dl div {
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.z-device-card dt {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.1;
+  font-weight: 850;
+}
+
+.z-device-card dd {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--blue-deep);
+  font-size: 14px;
+  line-height: 1.1;
+  font-weight: 900;
+}
+
+.z-missing-list {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #f1c27d;
+  border-radius: 8px;
+  background: #fff8eb;
+  color: var(--amber);
+  font-size: 13px;
+  line-height: 1.35;
+  font-weight: 800;
+}
+
+.z-missing-list.ok {
+  border-color: #b6dec9;
+  background: #edf8f3;
+  color: var(--good);
+}
+
+.z-missing-list div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.z-missing-list span {
+  min-height: 26px;
+  padding: 6px 8px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.68);
+  font-size: 11px;
+  line-height: 1;
+}
+
 .module-picker {
   display: grid;
   grid-template-columns: 1fr;
@@ -1076,6 +1260,11 @@ th {
   .library-summary,
   .library-filter,
   .month-grid,
+  .z-month-head,
+  .z-device-form,
+  .z-kpi-grid,
+  .z-device-grid,
+  .z-device-card dl,
   .rule-grid,
   .review-field-grid {
     grid-template-columns: 1fr;

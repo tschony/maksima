@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .ai_extractor import AI_EXTRACTION_ERRORS, ai_model, ai_provider, extract_with_ai
 from .exporters import export_filename, write_workbook
-from .ocr import extract_receipt, extract_z_report, is_z_report_text, run_ocr_pages
+from .ocr import extract_receipt, extract_z_reports, is_z_report_text, run_ocr_pages
 from .parsers import parse_bank_file
 from .persistence import (
     EXPORT_DIR,
@@ -20,6 +20,7 @@ from .persistence import (
     create_direct_upload,
     create_feedback_record,
     create_rule_record,
+    create_z_device_record,
     delete_document_record,
     delete_extracted_item_record,
     ensure_ready,
@@ -86,6 +87,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response(handle_stored_upload(payload))
             elif parsed.path == "/api/rules":
                 self.json_response(create_rule(payload))
+            elif parsed.path == "/api/z-devices":
+                self.json_response(create_z_device(payload))
             elif parsed.path == "/api/feedback":
                 self.json_response(create_feedback(payload))
             elif parsed.path == "/api/review-item":
@@ -205,6 +208,10 @@ REVIEW_TABLES = {
             "gross_total",
             "vat_lines",
             "payment_breakdown",
+            "cumulative_total",
+            "cumulative_vat",
+            "duplicate_flag",
+            "validation_warnings",
             "needs_review",
         },
     },
@@ -396,8 +403,8 @@ def process_uploaded_file(path: Path, stored_path: str, client_id: int, period: 
                 if active_module == "z":
                     for ocr_page in ocr_pages:
                         source_name = page_source_name(filename, "Z Raporu", ocr_page["page_number"], len(ocr_pages))
-                        item = extract_z_report(ocr_page["raw_text"], client_id, period, source_name)
-                        insert_extracted_item(doc_id, active_module, item)
+                        for item in extract_z_reports(ocr_page["raw_text"], client_id, period, source_name):
+                            insert_extracted_item(doc_id, active_module, item)
                 else:
                     for ocr_page in ocr_pages:
                         source_name = page_source_name(filename, "Fiş", ocr_page["page_number"], len(ocr_pages))
@@ -506,6 +513,16 @@ def create_rule(payload: dict) -> dict:
     if not pattern or not account_code:
         raise ValueError("Açıklama paterni ve hesap kodu gerekli")
     return create_rule_record(client_id, pattern, account_code)
+
+
+def create_z_device(payload: dict) -> dict:
+    client_id = int(payload.get("client_id") or 0)
+    name = (payload.get("name") or "").strip()
+    brand = (payload.get("brand") or "").strip()
+    serial = (payload.get("serial") or "").strip()
+    if not client_id or not name:
+        raise ValueError("Kasa adı ve mükellef gerekli")
+    return create_z_device_record(client_id, name, brand, serial)
 
 
 def create_feedback(payload: dict) -> dict:

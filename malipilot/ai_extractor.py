@@ -622,6 +622,8 @@ def openai_schema_for(module: str) -> dict[str, Any]:
             "device_serial": {"type": "string"},
             "z_no": {"type": "string"},
             "gross_total": {"type": "string"},
+            "cumulative_total": {"type": "string"},
+            "cumulative_vat": {"type": "string"},
             "vat_lines": {
                 "type": "array",
                 "items": {
@@ -684,6 +686,8 @@ def schema_for(module: str) -> dict[str, Any]:
             "device_serial": {"type": "STRING"},
             "z_no": {"type": "STRING"},
             "gross_total": {"type": "STRING"},
+            "cumulative_total": {"type": "STRING"},
+            "cumulative_vat": {"type": "STRING"},
             "vat_lines": {
                 "type": "ARRAY",
                 "items": {
@@ -777,6 +781,8 @@ def normalize_gemini_z_report(item: dict[str, Any], client_id: int, period: str,
         "device_serial": clean_string(item.get("device_serial")),
         "z_no": z_no,
         "gross_total": gross_total,
+        "cumulative_total": normalize_amount(item.get("cumulative_total")),
+        "cumulative_vat": normalize_amount(item.get("cumulative_vat")),
         "vat_lines": json.dumps(normalize_vat_lines(item.get("vat_lines")), ensure_ascii=False),
         "payment_breakdown": json.dumps(normalize_payment_breakdown(item.get("payment_breakdown")), ensure_ascii=False),
         "confidence": confidence,

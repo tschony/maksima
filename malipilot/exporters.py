@@ -70,13 +70,24 @@ def workbook_xml(names: list[str]) -> str:
 
 
 def sheet_xml(rows: list[dict[str, Any]]) -> str:
-    headers = sorted({key for row in rows for key in row.keys()}) if rows else ["empty"]
+    headers = ordered_headers(rows) if rows else ["empty"]
     root = Element("worksheet", xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main")
     data = SubElement(root, "sheetData")
     write_row(data, 1, headers)
     for row_idx, row in enumerate(rows, start=2):
         write_row(data, row_idx, [row.get(header, "") for header in headers])
     return b'<?xml version="1.0" encoding="UTF-8"?>' + tostring(root, encoding="utf-8")
+
+
+def ordered_headers(rows: list[dict[str, Any]]) -> list[str]:
+    headers: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for key in row.keys():
+            if key not in seen:
+                seen.add(key)
+                headers.append(key)
+    return headers
 
 
 def write_row(parent: Element, index: int, values: list[Any]) -> None:

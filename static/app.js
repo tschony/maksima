@@ -31,12 +31,16 @@ const FIELD_LABELS = {
   suggested_account_code: "Önerilen hesap kodu",
   duplicate_flag: "Mükerrer olabilir",
   report_date: "Rapor tarihi",
+  device_id: "Kasa",
   device_brand: "Cihaz markası",
   device_serial: "Cihaz seri no",
   z_no: "Z no",
   gross_total: "Toplam tutar",
   vat_lines: "KDV satırları",
   payment_breakdown: "Ödeme dağılımı",
+  cumulative_total: "Kümülatif toplam",
+  cumulative_vat: "Kümülatif KDV",
+  validation_warnings: "Kontrol uyarıları",
   source_file: "Belge",
   receipt_date: "Fiş tarihi",
   merchant_name: "Satıcı adı",
@@ -72,7 +76,19 @@ const VALUE_LABELS = {
 
 const REVIEW_FIELDS = {
   bank: ["date", "description", "debit", "credit", "balance", "currency", "counterparty_guess", "suggested_account_code", "duplicate_flag"],
-  z: ["report_date", "device_brand", "device_serial", "z_no", "gross_total", "vat_lines", "payment_breakdown"],
+  z: [
+    "report_date",
+    "device_id",
+    "device_brand",
+    "device_serial",
+    "z_no",
+    "gross_total",
+    "vat_lines",
+    "payment_breakdown",
+    "cumulative_total",
+    "cumulative_vat",
+    "validation_warnings",
+  ],
   receipt: ["receipt_date", "merchant_name", "vkn_tckn", "document_no", "gross_total", "vat_total", "payment_method", "bookkeeping_status"],
 };
 
@@ -350,6 +366,23 @@ function renderReviewDetail(payload) {
 
 function renderReviewField(field, value) {
   const safeValue = value ?? "";
+  if (field === "device_id") {
+    const devices = clientZDevices();
+    return `
+      <label>
+        ${escapeHtml(labelFor(field))}
+        <select data-field="${escapeHtml(field)}">
+          <option value="">Belirsiz kasa</option>
+          ${devices
+            .map(
+              (device) =>
+                `<option value="${escapeHtml(device.id)}" ${String(device.id) === String(safeValue) ? "selected" : ""}>${escapeHtml(deviceDisplayName(device))}</option>`,
+            )
+            .join("")}
+        </select>
+      </label>
+    `;
+  }
   if (field === "bookkeeping_status") {
     const options = ["uygun", "eksik", "okunamadi", "manuel_kontrol", "islenmez"];
     return `
@@ -363,7 +396,7 @@ function renderReviewField(field, value) {
       </label>
     `;
   }
-  if (field === "vat_lines" || field === "payment_breakdown" || field === "description") {
+  if (field === "vat_lines" || field === "payment_breakdown" || field === "validation_warnings" || field === "description") {
     return `
       <label class="wide-field">
         ${escapeHtml(labelFor(field))}
@@ -419,7 +452,8 @@ function renderDataTable() {
     return;
   }
   renderLibraryTitle(visibleRows.length);
-  target.innerHTML = renderLibraryDetailTable(visibleRows, activeTab);
+  target.innerHTML = `${activeTab === "z" ? renderZMonthlyPanel(monthRows, visibleRows) : ""}${renderLibraryDetailTable(visibleRows, activeTab)}`;
+  bindZMonthlyPanel();
   bindLibraryActions();
 }
 
@@ -522,6 +556,248 @@ function groupRowsByMonth(rows, tabName) {
     .sort((a, b) => String(b.month).localeCompare(String(a.month)));
 }
 
+function renderZMonthlyPanel(monthRows, visibleRows) {
+  if (!activeLibraryMonth || !/^\d{4}-\d{2}$/.test(activeLibraryMonth)) return "";
+  const overview = zMonthlyOverview(monthRows);
+  const visibleTotal = visibleRows.reduce((sum, row) => sum + rowGrossTotal(row, "z"), 0);
+  const visibleVat = visibleRows.reduce((sum, row) => sum + rowVatTotal(row, "z"), 0);
+  return `
+    <section class="z-month-panel">
+      <div class="z-month-head">
+        <div>
+          <span class="eyebrow">Z ay kontrolü</span>
+          <h3>${escapeHtml(monthLabel(activeLibraryMonth))}</h3>
+          <p>Kasa bazında günlük Z raporları, eksik günler, mükerrer kayıtlar ve kontrol uyarıları.</p>
+        </div>
+        <form id="z-device-form" class="z-device-form">
+          <label>
+            Kasa adı
+            <input name="name" placeholder="Kasa 1" required />
+          </label>
+          <label>
+            Marka
+            <input name="brand" placeholder="Beko, Ingenico..." />
+          </label>
+          <label>
+            Seri no
+            <input name="serial" placeholder="BCJ 00077185" />
+          </label>
+          <button type="submit" class="primary">Kasa ekle</button>
+        </form>
+      </div>
+      <div class="z-kpi-grid">
+        ${[
+          ["Beklenen Z", String(overview.expectedReports)],
+          ["Gelen gün", String(overview.receivedDays)],
+          ["Eksik gün", String(overview.missingDays)],
+          ["Mükerrer", String(overview.duplicateCount)],
+          ["Kontrol", String(overview.reviewCount)],
+          ["Filtre toplamı", formatMoney(visibleTotal)],
+          ["Filtre KDV", formatMoney(visibleVat)],
+        ]
+          .map(([label, value]) => `<div class="z-kpi"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
+          .join("")}
+      </div>
+      ${renderZDeviceCards(overview)}
+      ${renderZMissingList(overview)}
+    </section>
+  `;
+}
+
+function bindZMonthlyPanel() {
+  const form = $("#z-device-form");
+  if (!form) return;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const client = selectedClient();
+    if (!client) return;
+    const submitButton = event.submitter || form.querySelector('button[type="submit"]');
+    submitButton.disabled = true;
+    const payload = Object.fromEntries(new FormData(form).entries());
+    try {
+      await api("/api/z-devices", {
+        method: "POST",
+        body: JSON.stringify({ ...payload, client_id: client.id }),
+      });
+      showMessage("Kasa kaydedildi. Z ay kontrolü güncellendi.");
+      await refresh();
+      activeLibraryMonth ||= currentPeriod();
+      renderDataTable();
+    } catch (error) {
+      showMessage(`Kasa kaydedilemedi: ${error.message}`);
+    } finally {
+      if (submitButton?.isConnected) submitButton.disabled = false;
+    }
+  });
+}
+
+function renderZDeviceCards(overview) {
+  if (!overview.devices.length) {
+    return '<div class="empty-state">Bu ay için kasa kaydı yok. İlk Z raporu geldiğinde kasa otomatik oluşur veya yukarıdan elle eklenir.</div>';
+  }
+  return `
+    <div class="z-device-grid">
+      ${overview.devices
+        .map((entry) => {
+          const device = entry.device;
+          const missingPreview = entry.missingDays.slice(0, 8).map((day) => String(day).padStart(2, "0")).join(", ");
+          return `
+            <article class="z-device-card">
+              <div>
+                <span>${escapeHtml(device.brand || "Kasa")}</span>
+                <strong>${escapeHtml(deviceDisplayName(device))}</strong>
+                <small>${escapeHtml(device.serial || "Seri no eksik")}</small>
+              </div>
+              <dl>
+                <div><dt>Gelen</dt><dd>${escapeHtml(entry.receivedDays)}/${escapeHtml(entry.expectedDays)}</dd></div>
+                <div><dt>Eksik</dt><dd>${escapeHtml(entry.missingDays.length)}</dd></div>
+                <div><dt>Kontrol</dt><dd>${escapeHtml(entry.reviewCount)}</dd></div>
+                <div><dt>Toplam</dt><dd>${escapeHtml(formatMoney(entry.grossTotal))}</dd></div>
+                <div><dt>KDV</dt><dd>${escapeHtml(formatMoney(entry.vatTotal))}</dd></div>
+              </dl>
+              ${
+                entry.missingDays.length
+                  ? `<p>Eksik günler: ${escapeHtml(missingPreview)}${entry.missingDays.length > 8 ? "..." : ""}</p>`
+                  : "<p>Bu kasa için eksik gün görünmüyor.</p>"
+              }
+            </article>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function renderZMissingList(overview) {
+  if (!overview.missingRows.length) {
+    return '<div class="z-missing-list ok">Eksik gün yok.</div>';
+  }
+  const rows = overview.missingRows.slice(0, 80);
+  return `
+    <div class="z-missing-list">
+      <strong>Eksik günler</strong>
+      <div>
+        ${rows.map((row) => `<span>${escapeHtml(row.device)} · ${escapeHtml(row.date)}</span>`).join("")}
+        ${overview.missingRows.length > rows.length ? `<span>+${escapeHtml(overview.missingRows.length - rows.length)} gün daha</span>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function zMonthlyOverview(rows) {
+  const days = daysInMonth(activeLibraryMonth);
+  const deviceMap = new Map();
+  clientZDevices().forEach((device) => {
+    deviceMap.set(deviceKeyFromDevice(device), emptyZDeviceEntry(device, days));
+  });
+  rows.forEach((row) => {
+    const key = zDeviceKey(row);
+    if (!deviceMap.has(key)) {
+      deviceMap.set(
+        key,
+        emptyZDeviceEntry(
+          {
+            id: row.device_id || key,
+            name: deviceName(row.device_id, row),
+            brand: row.device_brand || "",
+            serial: row.device_serial || "",
+          },
+          days,
+        ),
+      );
+    }
+    const entry = deviceMap.get(key);
+    const day = zDay(row);
+    entry.rows.push(row);
+    entry.grossTotal += rowGrossTotal(row, "z");
+    entry.vatTotal += rowVatTotal(row, "z");
+    if (day) entry.daysSeen.add(day);
+    if (truthy(row.duplicate_flag)) entry.duplicateCount += 1;
+    if (rowNeedsReview(row, "z")) entry.reviewCount += 1;
+    if (parseWarnings(row.validation_warnings).length) entry.warningCount += 1;
+  });
+
+  const devices = Array.from(deviceMap.values()).map((entry) => {
+    const missingDays = [];
+    for (let day = 1; day <= days; day += 1) {
+      if (!entry.daysSeen.has(day)) missingDays.push(day);
+    }
+    return { ...entry, receivedDays: entry.daysSeen.size, missingDays };
+  });
+  const missingRows = devices.flatMap((entry) =>
+    entry.missingDays.map((day) => ({
+      device: deviceDisplayName(entry.device),
+      date: `${activeLibraryMonth}-${String(day).padStart(2, "0")}`,
+    })),
+  );
+  return {
+    devices,
+    expectedReports: devices.length * days,
+    receivedDays: devices.reduce((sum, entry) => sum + entry.daysSeen.size, 0),
+    missingDays: missingRows.length,
+    duplicateCount: devices.reduce((sum, entry) => sum + entry.duplicateCount, 0),
+    reviewCount: devices.reduce((sum, entry) => sum + entry.reviewCount, 0),
+    missingRows,
+  };
+}
+
+function emptyZDeviceEntry(device, expectedDays) {
+  return {
+    device,
+    expectedDays,
+    rows: [],
+    daysSeen: new Set(),
+    missingDays: [],
+    duplicateCount: 0,
+    reviewCount: 0,
+    warningCount: 0,
+    grossTotal: 0,
+    vatTotal: 0,
+  };
+}
+
+function clientZDevices() {
+  const client = selectedClient();
+  if (!client) return [];
+  return (state?.z_devices || []).filter((device) => {
+    const sameClient = String(device.client_id) === String(client.id);
+    const active = device.active === undefined || device.active === true || device.active === 1 || device.active === "1";
+    return sameClient && active;
+  });
+}
+
+function deviceKeyFromDevice(device) {
+  return String(device.id || `${device.serial || ""}|${device.brand || ""}|${device.name || ""}` || "belirsiz");
+}
+
+function zDeviceKey(row) {
+  if (row.device_id) return String(row.device_id);
+  return `${row.device_serial || ""}|${row.device_brand || ""}|${row.source_file || ""}` || "belirsiz";
+}
+
+function deviceName(deviceId, row = {}) {
+  const device = clientZDevices().find((entry) => String(entry.id) === String(deviceId));
+  if (device) return deviceDisplayName(device);
+  return [row.device_brand, row.device_serial].filter(Boolean).join(" · ") || "Belirsiz kasa";
+}
+
+function deviceDisplayName(device) {
+  return device?.name || [device?.brand, device?.serial].filter(Boolean).join(" · ") || "Belirsiz kasa";
+}
+
+function daysInMonth(period) {
+  if (!/^\d{4}-\d{2}$/.test(period || "")) return 31;
+  const [year, month] = period.split("-").map(Number);
+  return new Date(year, month, 0).getDate();
+}
+
+function zDay(row) {
+  const text = String(row.report_date || "");
+  if (!/^\d{4}-\d{2}-\d{2}/.test(text)) return null;
+  const day = Number(text.slice(8, 10));
+  return Number.isInteger(day) && day > 0 ? day : null;
+}
+
 function bindMonthFolders() {
   $$(".month-folder").forEach((button) => {
     button.addEventListener("click", () => {
@@ -544,7 +820,7 @@ const TAB_LABELS = {
 
 const LIBRARY_COLUMNS = {
   bank: ["date", "bank_name", "description", "debit", "credit", "suggested_account_code", "confidence", "needs_review"],
-  z: ["report_date", "source_file", "z_no", "gross_total", "vat_lines", "confidence", "needs_review"],
+  z: ["report_date", "device_id", "source_file", "z_no", "gross_total", "vat_lines", "duplicate_flag", "validation_warnings", "confidence", "needs_review"],
   receipt: ["receipt_date", "merchant_name", "vkn_tckn", "document_no", "gross_total", "vat_total", "bookkeeping_status", "confidence", "needs_review"],
   docs: ["period", "module", "original_name", "status", "warnings", "created_at"],
 };
@@ -768,15 +1044,19 @@ function formatCell(col, value) {
   if (col === "needs_review") {
     return value ? '<span class="badge review">kontrol</span>' : '<span class="badge ok">tamam</span>';
   }
+  if (col === "duplicate_flag") {
+    return truthy(value) ? '<span class="badge review">mükerrer</span>' : '<span class="badge ok">tekil</span>';
+  }
   if (col === "confidence" && value !== undefined && value !== null && value !== "") {
     const number = Number(value);
     const cls = number < 0.65 ? "bad" : number < 0.8 ? "review" : "ok";
     return `<span class="badge ${cls}">${Math.round(number * 100)}%</span>`;
   }
+  if (col === "device_id") return escapeHtml(deviceName(value));
   if (col === "item_type" || col === "module") return escapeHtml(TYPE_LABELS[value] || value || "");
   if (col === "source_file" || col === "title" || col === "original_name") return escapeHtml(visibleDocumentTitle(value));
   if (col === "bookkeeping_status" || col === "status") return escapeHtml(VALUE_LABELS[value] || value || "");
-  if (col === "warnings") return escapeHtml(formatWarnings(value));
+  if (col === "warnings" || col === "validation_warnings") return escapeHtml(formatWarnings(value));
   return escapeHtml(value ?? "");
 }
 
@@ -794,13 +1074,25 @@ function visibleDocumentTitle(value) {
 }
 
 function formatWarnings(value) {
-  if (!value) return "";
+  return parseWarnings(value).join(", ");
+}
+
+function parseWarnings(value) {
+  if (!value) return [];
   try {
     const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed.join(", ") : String(parsed);
+    if (Array.isArray(parsed)) return parsed.map((item) => String(item)).filter(Boolean);
+    if (parsed) return [String(parsed)];
   } catch {
-    return String(value);
+    return [String(value)];
   }
+  return [];
+}
+
+function truthy(value) {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0 || value === null || value === undefined) return false;
+  return ["1", "true", "yes", "on"].includes(String(value).toLowerCase());
 }
 
 function escapeHtml(value) {
