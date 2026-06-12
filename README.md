@@ -59,6 +59,7 @@ Supabase şeması `supabase_schema.sql` dosyasındadır. Bu değişkenler yoksa 
 - Anonim mükellef oluşturma.
 - Banka dosyası yükleme ve satırları standart formata çevirme.
 - Z raporu ve fiş/gider belgesi yükleme.
+- `Z GÜNLÜK RAPORU` belgelerini müşteri fişinden ayırma; `KÜM TOP` ve `KÜM KDV` değerlerini günlük tutar olarak kaydetmeme. Ayrıntı: `Z_RAPORU_KURALLARI.md`.
 - ChatGPT varsa belge alanlarını doğrudan çıkarma; yoksa yerel OCR ile alanları tahmin etme.
 - Büyük PDF'leri önce Supabase Storage'a, ardından ChatGPT dosya okuma akışına yönlendirme.
 - Belge okuma denemelerini `extraction_runs` tablosunda denetlenebilir şekilde saklama.

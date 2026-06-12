@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -16,6 +17,7 @@ from malipilot.ai_extractor import (
     openai_request_body,
     openai_response_text,
     openai_schema_for,
+    prompt_for,
     schema_for,
     should_use_file_api,
     unwrap_gemini_file_response,
@@ -56,6 +58,44 @@ class ParserTests(unittest.TestCase):
         item = extract_z_report(raw, client_id=1, period="2026-06", source_file="z.jpg")
         self.assertEqual(item["report_date"], "2026-06-05")
         self.assertEqual(item["gross_total"], "720.00")
+
+    def test_z_report_extraction_ignores_cumulative_totals(self):
+        raw = (
+            "Z GÜNLÜK RAPORU\n"
+            "TARIH: 04/05/26\n"
+            "Z SAYAC 673\n"
+            "MALI VERI\n"
+            "TOP *0,00\n"
+            "KDV *0,00\n"
+            "KÜM TOP *4.670.639,68\n"
+            "KÜM KDV *368.516,78\n"
+            "Z NO:0673\n"
+            "VERGI DOKUMU\n"
+            "%20 TOPLAM *3.255,00\n"
+            "KDV *542,50\n"
+            "MALI VERI\n"
+            "TOP *3.255,00\n"
+            "KDV *542,50\n"
+            "KÜM TOP *4.673.894,68\n"
+            "KÜM KDV *369.059,28\n"
+            "Z NO:0674\n"
+        )
+        item = extract_z_report(raw, client_id=1, period="2026-06", source_file="z.jpg")
+        vat_lines = json.loads(item["vat_lines"])
+
+        self.assertEqual(item["report_date"], "2026-05-04")
+        self.assertEqual(item["z_no"], "0674")
+        self.assertEqual(item["gross_total"], "3255.00")
+        self.assertEqual(vat_lines[-1], {"rate": "20", "amount": "542.50"})
+
+    def test_receipt_extraction_marks_z_report_as_not_customer_receipt(self):
+        raw = "Z GÜNLÜK RAPORU\nTARIH: 04/05/26\nZ SAYAC 674\nTOP *3.255,00\nKDV *542,50\n"
+        item = extract_receipt(raw, client_id=1, period="2026-06", source_file="z-as-fis.jpg")
+
+        self.assertEqual(item["bookkeeping_status"], "islenmez")
+        self.assertEqual(item["document_no"], "674")
+        self.assertEqual(item["gross_total"], "")
+        self.assertIn("Z raporu", item["raw_text"])
 
     def test_receipt_extraction(self):
         raw = "MARKET AŞ\nTarih: 06.06.2026\nVKN 1234567890\nKDV 18,00\nTOPLAM 118,00"
@@ -141,6 +181,12 @@ class ParserTests(unittest.TestCase):
         self.assertFalse(item_schema["additionalProperties"])
         self.assertEqual(set(item_schema["required"]), set(item_schema["properties"].keys()))
         self.assertIn("belirsiz", item_schema["properties"]["payment_method"]["enum"])
+
+    def test_z_prompt_warns_against_cumulative_totals(self):
+        prompt = prompt_for("z")
+        self.assertIn("KÜM TOP", prompt)
+        self.assertIn("kümülatif", prompt)
+        self.assertIn("günlük", prompt)
 
     def test_openai_image_request_uses_responses_input_image(self):
         with tempfile.TemporaryDirectory() as tmp:

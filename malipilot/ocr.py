@@ -111,9 +111,13 @@ def run_tesseract_ocr(path: Path) -> str:
 def extract_z_report(raw_text: str, client_id: int, period: str, source_file: str) -> dict[str, Any]:
     text = normalize_ocr_text(raw_text)
     report_date = parse_ocr_date(text) or ""
-    total = first_amount_after(text, ["GENEL TOPLAM", "TOPLAM", "TOTAL", "SATIS", "SATIŞ"])
-    z_no = first_match(text, [r"\bZ\s*(?:NO|NUMARA|RAPOR)\s*[:\-]?\s*([A-Z0-9\-]+)", r"\bZ\s*([0-9]{2,})\b"])
+    total = z_report_total(text)
+    z_no = extract_z_number(text)
     vat_lines = extract_vat_lines(text)
+    if not vat_lines:
+        vat_total = z_report_vat_total(text)
+        if vat_total:
+            vat_lines = [{"rate": z_report_vat_rate(text) or "", "amount": vat_total}]
     payments = extract_payment_breakdown(text)
     confidence = 0.2
     if parse_ocr_date(text):
@@ -143,6 +147,24 @@ def extract_z_report(raw_text: str, client_id: int, period: str, source_file: st
 
 def extract_receipt(raw_text: str, client_id: int, period: str, source_file: str) -> dict[str, Any]:
     text = normalize_ocr_text(raw_text)
+    if is_z_report_text(text):
+        receipt_date = parse_ocr_date(text) or ""
+        return {
+            "client_id": client_id,
+            "period": receipt_date[:7] if receipt_date and len(receipt_date) >= 7 else period,
+            "source_file": source_file,
+            "receipt_date": receipt_date,
+            "merchant_name": "",
+            "vkn_tckn": "",
+            "document_no": extract_z_number(text) or "",
+            "gross_total": "",
+            "vat_total": "",
+            "payment_method": "",
+            "bookkeeping_status": "islenmez",
+            "confidence": 0.9,
+            "needs_review": True,
+            "raw_text": "Z raporu olarak görünüyor; fiş olarak işlenmemeli.\n" + raw_text,
+        }
     receipt_date = parse_ocr_date(text) or ""
     tax_id = extract_tax_id(text)
     total = receipt_total(text)
@@ -238,6 +260,61 @@ def first_amount_after(text: str, labels: list[str]) -> str | None:
     return None
 
 
+def is_z_report_text(text: str) -> bool:
+    return bool(re.search(r"\bZ\s+G[UÜ]NL[UÜ]K\s+RAPORU\b|\bZ\s+SAYA[ÇC]\b|\bZ\s*NO\s*[:\-]?\s*\d{2,}", text, re.I))
+
+
+def extract_z_number(text: str) -> str | None:
+    matches: list[tuple[int, str]] = []
+    for pattern in [
+        r"\bZ\s*(?:NO|NUMARA|RAPOR)\s*[:\-]?\s*([0-9]{2,})\b",
+        r"\bZ\s*SAYA[ÇC]\s*([0-9]{2,})\b",
+    ]:
+        matches.extend((match.start(), match.group(1).strip()) for match in re.finditer(pattern, text, re.I))
+    if matches:
+        return sorted(matches, key=lambda item: item[0])[-1][1]
+    return first_match(text, [r"\bZ\s*([0-9]{2,})\b"])
+
+
+def z_report_total(text: str) -> str | None:
+    candidates: list[Decimal] = []
+    for pattern in [
+        r"%\s*\d{1,2}\s+TOPLAM\s*\*?\s*([0-9][0-9\.,]*)",
+        r"\bGENEL\s+TOPLAM\s*\*?\s*([0-9][0-9\.,]*)",
+        r"(?<!KUM\s)(?<!KÜM\s)\bTOP\b\s*\*?\s*([0-9][0-9\.,]*)",
+        r"(?<!KUM\s)(?<!KÜM\s)\bTOPLAM\b\s*\*?\s*([0-9][0-9\.,]*)",
+    ]:
+        for match in re.finditer(pattern, text, re.I):
+            parsed = parse_ocr_amount(match.group(1))
+            if parsed is not None:
+                candidates.append(parsed)
+    for candidate in reversed(candidates):
+        if candidate > 0:
+            return format(candidate, "f")
+    return first_amount_after(text, ["GENEL TOPLAM", "TOPLAM", "TOTAL", "SATIS", "SATIŞ"])
+
+
+def z_report_vat_total(text: str) -> str | None:
+    candidates: list[Decimal] = []
+    for pattern in [
+        r"%\s*\d{1,2}\s+TOPLAM\s*\*?\s*[0-9][0-9\.,]*\s+KDV\s*\*?\s*([0-9][0-9\.,]*)",
+        r"(?<!KUM\s)(?<!KÜM\s)\bKDV\b\s*\*?\s*([0-9][0-9\.,]*)",
+    ]:
+        for match in re.finditer(pattern, text, re.I):
+            parsed = parse_ocr_amount(match.group(1))
+            if parsed is not None:
+                candidates.append(parsed)
+    for candidate in reversed(candidates):
+        if candidate > 0:
+            return format(candidate, "f")
+    return None
+
+
+def z_report_vat_rate(text: str) -> str | None:
+    match = re.search(r"%\s*(\d{1,2})\s+TOPLAM", text, re.I)
+    return match.group(1) if match else None
+
+
 def all_ocr_amounts(text: str) -> list[Decimal]:
     amounts = []
     for value in re.findall(r"\b[0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,][0-9]{2})\b", text):
@@ -299,6 +376,11 @@ def extract_vat_lines(text: str) -> list[dict[str, str]]:
     for rate, amount in re.findall(r"(?:KDV|VAT)\s*%?\s*(\d{1,2})[^0-9]+([0-9][0-9\.,]*)", text, re.I):
         parsed = parse_ocr_amount(amount)
         lines.append({"rate": rate, "amount": "" if parsed is None else format(parsed, "f")})
+    for rate, _total, amount in re.findall(r"%\s*(\d{1,2})\s+TOPLAM\s*\*?\s*([0-9][0-9\.,]*)\s+KDV\s*\*?\s*([0-9][0-9\.,]*)", text, re.I):
+        parsed = parse_ocr_amount(amount)
+        line = {"rate": rate, "amount": "" if parsed is None else format(parsed, "f")}
+        if line not in lines:
+            lines.append(line)
     return lines
 
 

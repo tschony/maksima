@@ -590,13 +590,20 @@ def prompt_for(module: str) -> str:
     if module == "z":
         return (
             "Türkçe mali müşavir asistanısın. Yüklenen belge bir Z raporu olabilir. "
-            "Belgedeki her Z raporunu ayrı kayıt olarak çıkar. Emin olmadığın alanı boş bırak. "
+            "Z GÜNLÜK RAPORU, Z RAPORU, Z SAYAÇ veya Z NO görünen belge müşteri fişi değil, günlük Z raporudur. "
+            "Fotoğrafta aynı uzun kâğıt üzerinde birden fazla Z raporu varsa her Z raporunu ayrı kayıt olarak çıkar; "
+            "arka plandaki başka kâğıtları ayrı belge gibi uydurma. Emin olmadığın alanı boş bırak. "
+            "gross_total alanına yalnızca günlük satış toplamını yaz: TOP, TOPLAM, %20 TOPLAM veya Mali Veri bölümündeki günlük tutar. "
+            "KÜM TOP ve KÜM KDV kümülatif kasa sayaçlarıdır; bunları asla günlük gross_total veya KDV tutarı olarak yazma. "
+            "Eğer günlük TOP/KDV okunamıyor ama ardışık KÜM TOP/KÜM KDV değerleri görünüyorsa sadece farktan emin olduğunda günlük değer olarak kullan. "
             "Tutarları 1234.56 formatında döndür. Tarihleri YYYY-MM-DD formatında döndür. "
             "Tahmin uydurma; eksik veya okunamayan alan varsa needs_review=true yap. "
             "Şemadaki bütün alanları döndür; bilinmeyen metin alanları boş string olsun."
         )
     return (
         "Türkçe mali müşavir asistanısın. Yüklenen belge fiş, e-arşiv fatura veya gider belgesi olabilir. "
+        "Z GÜNLÜK RAPORU, Z RAPORU, Z SAYAÇ veya Z NO içeren günlük kasa kapanışını müşteri fişi gibi işleme; "
+        "böyle bir belge görürsen items=[] döndür ve document_notes içinde bunun Z raporu olduğunu belirt. "
         "Belgedeki her ayrı fişi ayrı kayıt olarak çıkar. VKN/TCKN satıcıya ait değilse boş bırak. "
         "Tutarları 1234.56 formatında döndür. Tarihleri YYYY-MM-DD formatında döndür. "
         "Muhasebe kararı verme; sadece belgeyi hazırla. Emin olmadığın alanı boş bırak ve needs_review=true yap. "
