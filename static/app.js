@@ -1,11 +1,13 @@
 let state = null;
 let activeTab = "bank";
-let activeView = "dashboard";
+let activeView = "library";
 let activeReviewItem = null;
+let selectedClientId = localStorage.getItem("maliyardimci:selectedClientId") || "";
 const MAX_FUNCTION_UPLOAD_BYTES = 3 * 1024 * 1024;
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+
 const FIELD_LABELS = {
   id: "Kayıt no",
   item_type: "Tür",
@@ -65,6 +67,18 @@ const VALUE_LABELS = {
   failed: "Başarısız",
 };
 
+const REVIEW_FIELDS = {
+  bank: ["date", "description", "debit", "credit", "balance", "currency", "counterparty_guess", "suggested_account_code", "duplicate_flag"],
+  z: ["report_date", "device_brand", "device_serial", "z_no", "gross_total", "vat_lines", "payment_breakdown"],
+  receipt: ["receipt_date", "merchant_name", "vkn_tckn", "document_no", "gross_total", "vat_total", "payment_method", "bookkeeping_status"],
+};
+
+const REVIEW_LABELS = {
+  bank: "Banka hareketi",
+  z: "Z raporu",
+  receipt: "Fiş / gider belgesi",
+};
+
 async function api(path, options = {}) {
   const timeoutMs = options.timeoutMs || 90000;
   const controller = new AbortController();
@@ -87,73 +101,155 @@ async function api(path, options = {}) {
 
 async function refresh() {
   state = await api("/api/state");
+  reconcileSelectedClient();
   renderCounts();
-  renderClientOptions();
   renderClientList();
+  renderSelectedClient();
+  renderShell();
   renderReview();
   renderDataTable();
 }
 
+function reconcileSelectedClient() {
+  if (!selectedClientId) return;
+  const exists = state.clients.some((client) => String(client.id) === String(selectedClientId));
+  if (!exists) {
+    selectedClientId = "";
+    localStorage.removeItem("maliyardimci:selectedClientId");
+  }
+}
+
+function selectedClient() {
+  if (!state || !selectedClientId) return null;
+  return state.clients.find((client) => String(client.id) === String(selectedClientId)) || null;
+}
+
+function currentPeriod() {
+  return $("#workspace-period")?.value.trim() || "2026-06";
+}
+
+function setSelectedClient(clientId, shouldScroll = true) {
+  selectedClientId = clientId ? String(clientId) : "";
+  if (selectedClientId) {
+    localStorage.setItem("maliyardimci:selectedClientId", selectedClientId);
+  } else {
+    localStorage.removeItem("maliyardimci:selectedClientId");
+  }
+  activeReviewItem = null;
+  activeView = "library";
+  renderClientList();
+  renderSelectedClient();
+  renderShell();
+  renderReview();
+  renderDataTable();
+  if (!selectedClient()) {
+    if (shouldScroll) $("#client-gate")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
+  switchView("library", false);
+  if (shouldScroll) $("#client-workspace")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function renderShell() {
+  const hasClient = Boolean(selectedClient());
+  $("#client-gate")?.classList.toggle("is-hidden", hasClient);
+  $("#client-workspace")?.classList.toggle("is-hidden", !hasClient);
+  if (!hasClient) return;
+  syncContextFields();
+}
+
 function renderCounts() {
+  const target = $("#counts");
+  if (!target || !state) return;
   const counts = state.counts;
-  $("#counts").innerHTML = [
+  target.innerHTML = [
     ["Mükellef", counts.clients],
     ["Dosya", counts.documents],
     ["Banka", counts.bank],
-    ["Z Raporu", counts.z_reports],
+    ["Z raporu", counts.z_reports],
     ["Fiş", counts.receipts],
     ["Kontrol", counts.review],
   ]
-    .map(([label, value]) => `<div class="count"><strong>${value}</strong><span>${label}</span></div>`)
+    .map(([label, value]) => `<div class="count"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`)
     .join("");
+
   const aiStatus = $("#ai-status");
   if (aiStatus) {
     const storage = state.storage?.provider === "supabase" ? "Supabase" : "yerel kayıt";
     aiStatus.textContent =
       state.ai?.provider === "gemini"
         ? `Belge okuma: Gemini (${state.ai.model}) · Veri: ${storage}`
-        : `Belge okuma: yerel OCR · Veri: ${storage}`;
-  }
-}
-
-function renderClientOptions() {
-  const options = state.clients.map((client) => `<option value="${client.id}">${escapeHtml(client.name)}</option>`).join("");
-  $$('select[name="client_id"]').forEach((select) => {
-    const current = select.value;
-    select.innerHTML = options || '<option value="">Önce mandant ekle</option>';
-    if (current) select.value = current;
-  });
-  const exportClient = $("#export-client");
-  if (exportClient && state.clients.length && !exportClient.value) {
-    exportClient.value = String(state.clients[0].id);
+        : `Belge okuma: yerel okuma · Veri: ${storage}`;
   }
 }
 
 function renderClientList() {
   const target = $("#client-list");
-  if (!target) return;
+  if (!target || !state) return;
   if (!state.clients.length) {
-    target.innerHTML = '<div class="empty-state">Henüz mükellef yok. İlk deneme için Örnek Firma A ekle.</div>';
+    target.innerHTML = '<div class="empty-state">Henüz mükellef yok. İlk deneme için yeni mükellef oluştur.</div>';
     return;
   }
   target.innerHTML = state.clients
-    .map(
-      (client) => `
-        <div class="mini-item">
+    .map((client) => {
+      const isActive = String(client.id) === String(selectedClientId);
+      return `
+        <button type="button" class="client-card ${isActive ? "active" : ""}" data-client-id="${escapeHtml(client.id)}">
+          <span>${escapeHtml(client.alias || "Mükellef")}</span>
           <strong>${escapeHtml(client.name)}</strong>
-          <span>${escapeHtml(client.alias || "Kısa ad yok")}</span>
-        </div>
-      `,
-    )
+          <small>${isActive ? "Seçili mükellef" : "Kütüphaneyi aç"}</small>
+        </button>
+      `;
+    })
     .join("");
+  $$(".client-card").forEach((button) => {
+    button.addEventListener("click", () => setSelectedClient(button.dataset.clientId));
+  });
+}
+
+function renderSelectedClient() {
+  const client = selectedClient();
+  const name = $("#selected-client-name");
+  const alias = $("#selected-client-alias");
+  if (name) name.textContent = client ? client.name : "Mükellef seçilmedi";
+  if (alias) alias.textContent = client ? client.alias || "Kısa ad yok" : "Dosyaları görmek için mükellef seç.";
+  syncContextFields();
+}
+
+function syncContextFields() {
+  const client = selectedClient();
+  const clientId = client ? String(client.id) : "";
+  const period = currentPeriod();
+  $("#upload-client-id") && ($("#upload-client-id").value = clientId);
+  $("#rule-client-id") && ($("#rule-client-id").value = clientId);
+  $("#export-client") && ($("#export-client").value = clientId);
+  $("#upload-period") && ($("#upload-period").value = period);
+  $("#export-period") && ($("#export-period").value = period);
+}
+
+function filteredRows(rows) {
+  const client = selectedClient();
+  if (!client) return [];
+  const clientId = String(client.id);
+  const period = currentPeriod();
+  return (rows || []).filter((row) => {
+    const sameClient = row.client_id === undefined || String(row.client_id) === clientId;
+    const samePeriod = row.period === undefined || String(row.period) === period;
+    return sameClient && samePeriod;
+  });
+}
+
+function filteredReviewItems() {
+  return filteredRows(state?.review_items || []);
 }
 
 function renderReview() {
-  const rows = state.review_items || [];
   const target = $("#review-table");
+  if (!target || !state) return;
+  const rows = filteredReviewItems();
   if (!rows.length) {
-    target.innerHTML = '<div class="empty-state">Kontrol bekleyen satır yok.</div>';
-    if (!activeReviewItem) {
+    target.innerHTML = '<div class="empty-state">Seçili dönem için kontrol bekleyen satır yok.</div>';
+    if (!activeReviewItem && $("#review-detail")) {
       $("#review-detail").innerHTML = '<div class="empty-state">Kontrol için bir satır seç.</div>';
     }
     return;
@@ -181,18 +277,6 @@ function renderReview() {
     button.addEventListener("click", () => openReview(button.dataset.itemType, button.dataset.id));
   });
 }
-
-const REVIEW_FIELDS = {
-  bank: ["date", "description", "debit", "credit", "balance", "currency", "counterparty_guess", "suggested_account_code", "duplicate_flag"],
-  z: ["report_date", "device_brand", "device_serial", "z_no", "gross_total", "vat_lines", "payment_breakdown"],
-  receipt: ["receipt_date", "merchant_name", "vkn_tckn", "document_no", "gross_total", "vat_total", "payment_method", "bookkeeping_status"],
-};
-
-const REVIEW_LABELS = {
-  bank: "Banka hareketi",
-  z: "Z raporu",
-  receipt: "Fiş / gider belgesi",
-};
 
 async function openReview(itemType, id) {
   activeReviewItem = { item_type: itemType, id: Number(id) };
@@ -245,7 +329,7 @@ function renderReviewDetail(payload) {
         <button type="submit" class="danger-light" data-resolve="1" data-rating="gereksiz">Gereksiz kapat</button>
       </div>
     </form>
-    ${rawText ? `<details class="raw-text-box" open><summary>Okunan ham metin</summary><pre>${escapeHtml(rawText)}</pre></details>` : ""}
+    ${rawText ? `<details class="raw-text-box"><summary>Okunan metin</summary><pre>${escapeHtml(rawText)}</pre></details>` : ""}
     ${
       feedback.length
         ? `<div class="feedback-list"><strong>Son geri bildirim</strong>${feedback
@@ -315,11 +399,13 @@ async function submitReviewUpdate(event) {
 }
 
 function renderDataTable() {
+  const target = $("#data-table");
+  if (!target || !state) return;
   const datasets = {
-    bank: state.bank_rows || [],
-    z: state.z_reports || [],
-    receipt: state.receipts || [],
-    docs: state.recent_documents || [],
+    bank: filteredRows(state.bank_rows || []),
+    z: filteredRows(state.z_reports || []),
+    receipt: filteredRows(state.receipts || []),
+    docs: filteredRows(state.recent_documents || []),
   };
   const preferred = {
     bank: ["id", "period", "bank_name", "date", "description", "debit", "credit", "counterparty_guess", "suggested_account_code", "confidence", "needs_review"],
@@ -327,7 +413,7 @@ function renderDataTable() {
     receipt: ["id", "period", "source_file", "receipt_date", "merchant_name", "vkn_tckn", "gross_total", "bookkeeping_status", "confidence", "needs_review"],
     docs: ["id", "period", "module", "original_name", "status", "warnings", "created_at"],
   };
-  $("#data-table").innerHTML = table(datasets[activeTab], preferred[activeTab], "Henüz veri yok.");
+  target.innerHTML = table(datasets[activeTab], preferred[activeTab], "Seçili dönem için kayıt yok.");
 }
 
 function table(rows, columns, emptyText) {
@@ -388,8 +474,16 @@ function escapeHtml(value) {
 
 function showMessage(text) {
   const box = $("#message");
+  if (!box) return;
   box.hidden = false;
   box.textContent = text;
+}
+
+function clearMessage() {
+  const box = $("#message");
+  if (!box) return;
+  box.hidden = true;
+  box.textContent = "";
 }
 
 function formatFileSize(bytes) {
@@ -397,20 +491,25 @@ function formatFileSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function switchView(viewName) {
-  activeView = viewName;
+function switchView(viewName, shouldScroll = true) {
+  if (!selectedClient()) {
+    renderShell();
+    if (shouldScroll) $("#client-gate")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
+  activeView = viewName || "library";
   $$(".view").forEach((view) => view.classList.remove("active"));
-  const target = $(`#view-${viewName}`);
-  if (target) target.classList.add("active");
-  $$(".workflow-step").forEach((button) => {
-    button.classList.toggle("active", button.dataset.view === viewName);
+  const target = $(`#view-${activeView}`) || $("#view-library");
+  target.classList.add("active");
+  $$(".workspace-tab").forEach((button) => {
+    button.classList.toggle("active", button.dataset.view === activeView);
   });
-  if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (shouldScroll) target.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function switchModule(moduleName) {
   const hidden = $('#upload-form input[name="module"]');
-  hidden.value = moduleName;
+  if (hidden) hidden.value = moduleName;
   $$(".module-option").forEach((option) => {
     option.classList.toggle("active", option.querySelector("input").value === moduleName);
   });
@@ -444,17 +543,24 @@ async function fileToBase64(file) {
 $("#client-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = new FormData(event.target);
-  await api("/api/clients", {
+  const created = await api("/api/clients", {
     method: "POST",
     body: JSON.stringify(Object.fromEntries(form.entries())),
   });
   event.target.reset();
   await refresh();
-  switchView("upload");
+  setSelectedClient(created.id);
 });
 
 $("#upload-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  const client = selectedClient();
+  if (!client) {
+    showMessage("Önce mükellef seç.");
+    setSelectedClient("");
+    return;
+  }
+  syncContextFields();
   const submitButton = event.submitter || event.target.querySelector('button[type="submit"]');
   const form = new FormData(event.target);
   const file = form.get("file");
@@ -470,8 +576,8 @@ $("#upload-form").addEventListener("submit", async (event) => {
   showMessage(file.size > MAX_FUNCTION_UPLOAD_BYTES ? "Büyük dosya Supabase'e yükleniyor..." : "Dosya işleniyor...");
   try {
     const basePayload = {
-      client_id: form.get("client_id"),
-      period: form.get("period"),
+      client_id: client.id,
+      period: currentPeriod(),
       module: form.get("module"),
       bank_name: form.get("bank_name"),
       filename: file.name,
@@ -500,9 +606,12 @@ $("#upload-form").addEventListener("submit", async (event) => {
         timeoutMs: 90000,
       });
     }
-    showMessage(result.warnings?.length ? `İşlendi, uyarılar: ${result.warnings.join(", ")}` : "Dosya işlendi. Kontrol kuyruğunu incele.");
+    showMessage(result.warnings?.length ? `İşlendi, uyarılar: ${result.warnings.join(", ")}` : "Dosya işlendi. Kütüphane ve kontrol kuyruğu güncellendi.");
+    event.target.reset();
+    $("#file-display").textContent = "Henüz dosya seçilmedi";
+    switchModule("bank");
     await refresh();
-    switchView("review");
+    switchView(filteredReviewItems().length ? "review" : "library");
   } catch (error) {
     const message = error.name === "AbortError" ? "İşlem zaman aşımına uğradı. Daha küçük dosya veya doğrudan Supabase yükleme gerekli." : error.message;
     showMessage(message);
@@ -513,26 +622,46 @@ $("#upload-form").addEventListener("submit", async (event) => {
 
 $("#rule-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  const client = selectedClient();
+  if (!client) {
+    showMessage("Önce mükellef seç.");
+    return;
+  }
+  syncContextFields();
   const form = new FormData(event.target);
   await api("/api/rules", {
     method: "POST",
     body: JSON.stringify(Object.fromEntries(form.entries())),
   });
   event.target.reset();
+  syncContextFields();
+  showMessage("Kural kaydedildi.");
   await refresh();
 });
 
 $("#refresh").addEventListener("click", refresh);
+$("#library-refresh").addEventListener("click", refresh);
+
+$("#change-client").addEventListener("click", () => {
+  clearMessage();
+  setSelectedClient("");
+});
+
+$("#workspace-period").addEventListener("change", () => {
+  syncContextFields();
+  activeReviewItem = null;
+  renderReview();
+  renderDataTable();
+});
 
 $("#export").addEventListener("click", () => {
-  const client = $("#export-client").value;
-  const period = $("#export-period").value;
+  const client = selectedClient();
+  const period = currentPeriod();
   if (!client || !period) {
     showMessage("Çıktı için mükellef ve dönem seç.");
-    switchView("upload");
     return;
   }
-  window.location.href = `/api/export?client_id=${encodeURIComponent(client)}&period=${encodeURIComponent(period)}`;
+  window.location.href = `/api/export?client_id=${encodeURIComponent(client.id)}&period=${encodeURIComponent(period)}`;
 });
 
 $("#upload-file").addEventListener("change", (event) => {
@@ -540,7 +669,7 @@ $("#upload-file").addEventListener("change", (event) => {
   $("#file-display").textContent = count ? `${count} dosya seçildi` : "Henüz dosya seçilmedi";
 });
 
-$$(".workflow-step, .nav-shortcut").forEach((button) => {
+$$(".workspace-tab").forEach((button) => {
   button.addEventListener("click", () => switchView(button.dataset.view));
 });
 
